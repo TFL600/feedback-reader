@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Open a PDF in the click-to-dictate feedback reader.
+#   open-reader <file.pdf>
+#   open-reader            # no PDF: the review queue
+# Starts the reader (reader/server.py) if it is not running, then asks it which tab to use
+# (POST /api/route): a tab already on this document (the same PDF, its review PDF or an earlier
+# render of the same draft), else a new one. Another document's tab is never taken over.
+# Each reader tab carries its id in the URL (#t=<id>). With Google Chrome on macOS this finds
+# that tab and brings it to the front; otherwise it opens the URL in the default browser
+# (FR_BROWSER names another macOS app to use). FR_NO_BROWSER=1 only starts and routes (tests).
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+. "$HERE/_config.sh"
+PDF=""
+if [ -n "${1:-}" ]; then
+	PDF="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+	[ -f "$PDF" ] || { echo "no such PDF: $1" >&2; exit 1; }
+fi
+PORT="${FR_PORT:-8765}"
+URL="http://127.0.0.1:$PORT/"
+READER="$(cd "$HERE/../reader" && pwd)/server.py"
+LOG="${FR_LOG:-${FR_HOME:-$HOME/.feedback-reader}/reader.log}"
+
+if ! curl -s -m 2 "127.0.0.1:$PORT/api/queue" >/dev/null; then
+	mkdir -p "$(dirname "$LOG")"
+	nohup python3 "$READER" --no-browser --port "$PORT" >"$LOG" 2>&1 &
+	for _ in $(seq 20); do
+		curl -s -m 1 "127.0.0.1:$PORT/api/queue" >/dev/null && break
+		sleep 0.3
+	done
+fi
+
+TAB=$(python3 -c 'import json,sys; print(json.dumps({"path": sys.argv[1]}))' "$PDF" |
+	curl -s -X POST --data-binary @- "127.0.0.1:$PORT/api/route" |
+	python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+
+if [ -n "${FR_NO_BROWSER:-}" ]; then
+	echo "${PDF:-review queue} (tab $TAB)"
+	exit 0
+fi
+if [ "$(uname)" != "Darwin" ]; then
+	xdg-open "${URL}#t=$TAB" >/dev/null 2>&1 &
+	echo "${PDF:-review queue}"
+	exit 0
+fi
+
+BROWSER="${FR_BROWSER:-Google Chrome}"
+FOUND=0
+if [ "$BROWSER" = "Google Chrome" ]; then
+	FOUND=$(osascript - "$URL" "#t=$TAB" <<'OSA' 2>/dev/null || echo 0
+on run argv
+	set u to item 1 of argv
+	set tag to item 2 of argv
+	if application "Google Chrome" is not running then return 0
+	tell application "Google Chrome"
+		repeat with w in (every window)
+			set ts to (every tab of w)
+			repeat with i from 1 to (count of ts)
+				set t to item i of ts
+				if (URL of t) starts with u and (URL of t) contains tag then
+					set active tab index of w to i
+					set index of w to 1
+					activate
+					return 1
+				end if
+			end repeat
+		end repeat
+	end tell
+	return 0
+end run
+OSA
+)
+fi
+if [ "$FOUND" != "1" ]; then
+	open -a "$BROWSER" "${URL}#t=$TAB" 2>/dev/null || open "${URL}#t=$TAB"
+fi
+echo "${PDF:-review queue}"

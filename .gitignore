@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+# LaTeX build output of the examples and the guided round
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+examples/*.pdf
+tests/*.pdf

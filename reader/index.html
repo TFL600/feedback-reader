@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Review queue</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🎙</text></svg>">
+<style>
+:root{--bg:#e8e9ed;--panel:#fff;--ink:#1d2330;--muted:#6b7280;--line:#d9dbe1;--accent:#002147;--rec:#d62828;--pin:#e76f51;--done:#2a9d8f;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1d22;--panel:#26292f;--ink:#e6e7ea;--muted:#9aa0aa;--line:#3a3e46;--accent:#8fb3ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+header{position:sticky;top:0;z-index:20;display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+header .l,header .r{display:flex;gap:8px;align-items:center;min-width:0}
+header .r{justify-content:flex-end;flex-wrap:wrap}
+header b{color:var(--accent)}
+#docname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+#docname:hover{text-decoration:underline}
+button{font:inherit;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer;white-space:nowrap}
+button:hover{border-color:var(--accent)}
+button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.muted{color:var(--muted)}
+kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--bg)}
+/* mic meter */
+#mic{display:flex;align-items:center;gap:8px;padding:3px 10px;border:1px solid var(--line);border-radius:20px;cursor:pointer;max-width:360px}
+#mic canvas{display:block}
+#mic .dev{font-size:12px;max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mic.off{opacity:.55}
+/* Mic off is easy to miss and loses the note's voice: a loud amber pill in the middle of the bar. */
+#mic.typing{opacity:1;background:var(--warn);border-color:var(--warn);color:#fff;padding:5px 16px}
+#mic.typing canvas{display:none}
+#mic.typing .dev{font:700 15px system-ui;max-width:none}
+#micBtn.off{border-color:var(--warn);color:var(--warn);font-weight:600}
+.editor .nomic{display:none;color:var(--warn);font-weight:600}
+.editor.typing .nomic{display:inline}
+.editor .empty{display:none;color:var(--warn);font-size:12px;margin-top:4px;font-weight:600}
+.editor.isempty .empty{display:block}
+.editor.isempty{animation:shake .3s}
+@keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+#zoomPct{min-width:52px;font-variant-numeric:tabular-nums}
+/* pdf.js text layer: invisible text over each page, so the browser's own Cmd+F finds and highlights it.
+   pointer-events none keeps every click a pin (no text selection). */
+.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;z-index:2;pointer-events:none}
+.textLayer span,.textLayer br{color:transparent;position:absolute;white-space:pre;transform-origin:0% 0%}
+.textLayer .markedContent{top:0;height:0}
+#mic.silent{border-color:var(--rec);box-shadow:0 0 0 3px #d6282833}
+#mic select{display:none;max-width:220px;font:inherit;font-size:12px}
+#mic.pick select{display:block}#mic.pick .dev{display:none}
+/* layout */
+#layout{display:flex;align-items:flex-start}
+#pages{flex:1;display:flex;flex-direction:column;align-items:safe center;gap:18px;padding:18px 16px 140px;min-width:0;overflow-x:auto;scrollbar-width:none}
+#pages::-webkit-scrollbar{display:none}
+/* Zoomed in, the page list scrolls sideways; its own bar would sit below the last page, so a copy is pinned to the bottom of the window. */
+#hbar{position:fixed;bottom:0;z-index:16;display:none;height:14px;overflow-x:scroll;overflow-y:hidden;background:var(--panel);border-top:1px solid var(--line)}
+#hbar.show{display:block}#hbar div{height:1px}
+#hbar::-webkit-scrollbar{height:12px}#hbar::-webkit-scrollbar-track{background:transparent}#hbar::-webkit-scrollbar-thumb{background:var(--muted);border-radius:6px}
+.pagewrap{position:relative;flex:none}
+.page{position:relative;background:#fff;box-shadow:0 2px 10px #0003;cursor:crosshair}
+.page canvas{display:block}
+.dot{position:absolute;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:var(--pin);opacity:.75;pointer-events:none;z-index:4}
+.dot.live{width:12px;height:12px;margin:-6px 0 0 -6px;background:var(--rec);opacity:1;animation:pulse 1s infinite}
+.dot.hl{opacity:1;box-shadow:0 0 0 4px #e76f5155}
+@keyframes pulse{50%{box-shadow:0 0 0 7px #d6282833}}
+.leader{position:absolute;height:0;border-top:1.5px dashed var(--rec);pointer-events:none;z-index:4}
+.badge{position:absolute;z-index:5;min-width:22px;height:20px;padding:0 6px;border-radius:10px;background:var(--done);color:#fff;font:600 11px/20px system-ui;text-align:center;cursor:pointer;box-shadow:0 1px 3px #0004}
+.badge:hover{filter:brightness(1.1)}
+.badge::before{content:"";position:absolute;left:-7px;top:6px;border:4px solid transparent;border-right:4px solid var(--done)}
+.editor{position:absolute;z-index:10;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0004;padding:8px;cursor:default}
+.pagewrap .editor::before{content:"";position:absolute;left:-9px;top:10px;border:5px solid transparent;border-right:5px solid var(--rec)}
+.editor .ctx{font-size:12px;color:var(--muted);margin-bottom:6px;max-height:4.2em;overflow:hidden}
+.editor textarea{width:100%;height:64px;resize:vertical;border:1px solid var(--line);border-radius:6px;padding:6px;font:inherit;background:var(--bg);color:var(--ink)}
+.editor .row{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px}
+.editor .warn{display:none;color:var(--rec);font-size:12px;margin-top:4px}
+.editor.silent .warn{display:block}
+.recdot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+.recdot.rec{background:var(--rec);animation:pulse 1s infinite}
+#general{position:fixed;left:16px;bottom:16px;z-index:15;width:360px}
+#general .editor{position:static}
+#side{width:300px;flex:none;position:sticky;top:51px;max-height:calc(100vh - 51px);overflow:auto;padding:12px;border-left:1px solid var(--line);background:var(--panel)}
+#side h3{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.item{padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
+.item .src{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)}
+.item .txt{margin-top:2px}
+.item .pin{margin-top:2px;font-size:12px;color:var(--muted);font-style:italic;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.item .row{display:flex;gap:6px;align-items:center;margin-top:4px}
+.item button{padding:1px 8px;font-size:12px}
+.item .head{display:flex;gap:6px;align-items:center}
+.item .sel{margin:0;cursor:pointer}
+.item.picked{background:#e76f5118}
+.item .sub{margin:4px 0 0 18px;padding-left:8px;border-left:2px solid var(--line);font-size:12px}
+#selbar{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+#selbar button{padding:1px 8px;font-size:12px}
+#modes{display:inline-flex}#modes button{border-radius:0}#modes button:first-child{border-radius:6px 0 0 6px}#modes button:last-child{border-radius:0 6px 6px 0;margin-left:-1px}
+#modes button:disabled{opacity:.45;cursor:default}
+#hint{display:none;margin:0 0 8px;padding:6px 8px;border-radius:6px;background:#2a9d8f22;font-size:12px}body.review #hint{display:block}
+button.danger{border-color:var(--rec);color:var(--rec)}
+button.danger.on,button.danger:hover{background:var(--rec);color:#fff}
+#modal .add{margin:10px 0 0;padding-left:10px;border-left:2px solid var(--line)}
+#toast{position:fixed;right:16px;bottom:16px;z-index:60;background:var(--accent);color:#fff;padding:6px 12px;border-radius:6px;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}#toast.bad{background:var(--rec)}
+#modal{position:fixed;inset:0;z-index:50;background:#0006;display:flex;align-items:center;justify-content:center}
+#modal[hidden]{display:none}
+#modal .box{width:min(600px,calc(100vw - 32px));max-height:calc(100vh - 64px);overflow:auto;background:var(--panel);color:var(--ink);border-radius:10px;padding:18px;box-shadow:0 10px 40px #0006}
+#modal h2{margin:0 0 10px;font-size:17px}#modal h3{margin:16px 0 6px;font-size:14px}
+#modal .body{font-size:14px}
+#modal .pre{white-space:pre-wrap}
+#modal textarea.edittyped{width:100%;min-height:72px;resize:vertical;border:1px solid var(--line);border-radius:6px;padding:6px;font:inherit;background:var(--bg);color:var(--ink);margin:6px 0}
+#modal audio{width:100%;margin:8px 0}
+#modal code{background:var(--bg);padding:2px 6px;border-radius:4px;font-size:13px}
+#modal table{width:100%;border-collapse:collapse}
+#modal td{padding:5px 4px;border-bottom:1px solid var(--line)}
+#modal td:nth-child(2){width:110px}#modal td:nth-child(3){width:80px;text-align:right}
+#modal ul{margin:4px 0;padding-left:20px}
+#modal .row{display:flex;gap:8px;margin-top:14px}
+.qrow{display:flex;gap:6px;align-items:stretch;margin:4px 0}
+.qrow.done{opacity:.55}
+.recent{flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis}
+.recent b{font-weight:600}
+.recent span{font-weight:600}
+.recent small{color:var(--muted);margin-left:6px}
+.qrow .x{padding:0 9px;color:var(--muted);font-size:16px;line-height:1}
+.qrow .x:hover{color:var(--rec);border-color:var(--rec)}
+.recent em{font-style:normal;font-size:12px;color:var(--rec);margin-left:4px}
+.qrow.done em{color:var(--muted)}
+.qgroup{margin:0 0 14px}
+.qdir{font-size:13px;margin:10px 0 4px;color:var(--ink,inherit)}
+.qdir small{font-weight:400;color:var(--muted);margin-left:8px;font-size:11px}
+#empty{max-width:560px;margin:60px auto;background:var(--panel);border-radius:10px;padding:24px;box-shadow:0 2px 10px #0002}
+#dropzone{position:fixed;inset:0;z-index:70;background:#00214799;color:#fff;display:none;align-items:center;justify-content:center;font-size:22px;font-weight:600}
+body.dragging #dropzone{display:flex}
+/* Narrow (portrait) screens hide the notes list; the Notes button slides it in over the page. */
+#sideBtn{display:none}
+@media (max-width:1000px){#side{display:none}#sideBtn{display:inline-block}
+	body.showside #side{display:block;position:fixed;right:0;top:var(--hh,51px);bottom:0;max-height:none;width:min(340px,90vw);z-index:18;box-shadow:-4px 0 16px #0003}
+	body.showside #sideBtn{background:var(--accent);color:#fff;border-color:var(--accent)}}
+</style>
+</head>
+<body>
+<header>
+	<div class="l"><b>Feedback</b><button id="openBtn" title="Open another PDF">Open</button><button id="helpBtn" title="Keyboard shortcuts and how saving works">Shortcuts</button><span id="modes"><button data-m="write" title="Make notes on the document">Write</button><button data-m="review" title="Claude's changes from the last round: red struck out, blue new">Review changes</button></span><span id="docname" class="muted"></span></div>
+	<div id="mic" class="off" title="Microphone level. Click to choose the input device.">
+		<canvas id="meter" width="96" height="18"></canvas>
+		<span class="dev">mic off</span>
+		<select id="devSel"></select>
+	</div>
+	<div class="r">
+		<button id="sideBtn" title="Show or hide the notes list">☰ Notes <span id="count2">0</span></button>
+		<button id="genBtn" hidden title="General remark, spoken (not tied to a place)">🎙️ General</button>
+		<button id="genTextBtn" title="General remark, typed or pasted: never records">⌨ General</button>
+		<button id="micBtn">🎙 Mic on</button>
+		<button id="zoomOut" title="Zoom out (Cmd −, or pinch)">−</button><button id="zoomPct" title="Fit to width (Cmd 0)">100%</button><button id="zoomIn" title="Zoom in (Cmd +, or pinch)">+</button>
+		<button id="finishBtn" class="on">✓ Finish round</button>
+	</div>
+</header>
+<div id="layout">
+	<div id="pages"></div>
+	<aside id="side"><h3><span id="count">0</span> notes · <span id="sess" class="muted"></span></h3>
+		<div id="hint">Review: a change with no note is accepted. Pin a change to reject it (“reject”) or say how to redo it, then Finish round.</div>
+		<div id="selbar"><button id="selAll">Select all</button><button id="selDel" class="danger" hidden>Delete selected</button><button id="selClear" hidden>Clear</button></div>
+		<div id="list"></div></aside>
+</div>
+<div id="general"></div>
+<div id="hbar"><div></div></div>
+<div id="toast"></div>
+<div id="dropzone">Drop the PDF to open it</div>
+<input id="fileIn" type="file" accept="application/pdf,.pdf" hidden>
+<div id="modal" hidden><div class="box"><div class="body"></div><div class="row"><span style="flex:1"></span><button class="close">Close</button></div></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const GUTTER = 300;          // room right of each page for the note box and the numbered badges
+const SILENT = 0.012;        // RMS below this for the whole of the first 3 s of a note = probably the wrong mic
+const SLEEP_MIN = 10;        // the mic is released after this many idle minutes (no orange dot all day); the next note wakes it
+const S = { pdf: null, scale: null, pages: [], notes: [], micOn: false, stream: null, active: null, level: 0, capture: null, sel: new Set(), lastUse: Date.now(), asleep: false };
+const roots = () => S.notes.filter(n => !n.parent);                 // notes proper; additions hang off them
+const adds = n => S.notes.filter(m => m.parent === n.id);
+const num = n => roots().indexOf(n.parent ? S.notes.find(m => m.id === n.parent) : n) + 1;
+const $ = s => document.querySelector(s);
+const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+
+// Each tab has its own PDF and round on the server: its id lives in the URL hash, so a reload
+// keeps it, and open-reader can find this tab (#t=<id>) to reuse it or open a new one beside it.
+// A tab opened from the queue (?open=<path>) always gets a fresh id: Chrome copies sessionStorage into
+// tabs opened with window.open, and reusing the opener's id would move the opener to the new PDF.
+const OPEN_ON_LOAD = new URLSearchParams(location.search).get("open");
+const TAB = (location.hash.match(/t=([A-Za-z0-9_-]+)/) || [])[1] || (OPEN_ON_LOAD ? null : (() => { try { return sessionStorage.getItem("fr-tab"); } catch (e) { return null; } })()) || ("t" + Math.random().toString(36).slice(2, 10));
+try { sessionStorage.setItem("fr-tab", TAB); } catch (e) {}
+const START_ON_RECENT = !new URLSearchParams(location.search).has("doc") && !OPEN_ON_LOAD && !/t=/.test(location.hash);
+history.replaceState(null, "", location.pathname + "#t=" + TAB);
+const U = path => path + (path.includes("?") ? "&" : "?") + "tab=" + TAB;
+async function api(path, body, raw) {
+	const r = await fetch(U(path), { method: body === undefined ? "GET" : "POST", body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)) });
+	const j = await r.json().catch(() => ({}));
+	if (!r.ok) throw new Error(j.error || (path + " " + r.status));
+	return j;
+}
+function toast(msg, bad) { const t = $("#toast"); t.textContent = msg; t.classList.toggle("bad", !!bad); t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), bad ? 3500 : 1600); }
+
+// ---------- shortcuts (editable, saved per browser) ----------
+const ACTIONS = {
+	general: { label: "General remark, spoken (press again to save it)", def: "g", run: () => general() },
+	generalText: { label: "General remark, typed or pasted (never records)", def: "t", run: () => S.micOn ? toast("Turn the mic off to type a general remark") : general(true) },
+	mic: { label: "Microphone on / off", def: "m", run: () => toggleMic() },
+	open: { label: "Open another PDF", def: "o", run: () => showOpen() },
+	zoomIn: { label: "Zoom in (also Cmd +, or pinch)", def: "=", run: () => zoom(1.15) },
+	zoomOut: { label: "Zoom out (also Cmd −, or pinch)", def: "-", run: () => zoom(1 / 1.15) },
+	zoomFit: { label: "Fit to width (also Cmd 0)", def: "0", run: () => zoomFit() },
+	reload: { label: "Reload the PDF (rarely needed: it reloads itself after a rebuild)", def: "r", run: () => reloadPdf() },
+	finish: { label: "Finish round (transcribe, hand to Claude)", def: "F", run: () => finishRound() },
+	mode: { label: "Switch Write / Review changes", def: "v", run: () => switchMode() },
+	help: { label: "This menu", def: "?", run: () => showHelp() },
+};
+let KEYS = Object.assign(Object.fromEntries(Object.entries(ACTIONS).map(([k, a]) => [k, a.def])), store.get("fr-keys", {}));
+function keyName(k) { return k === " " ? "Space" : k; }
+
+// ---------- mic ----------
+async function ensureMic() {
+	if (!S.micOn) return null;
+	if (S.stream && S.stream.active) return S.stream;
+	const dev = store.get("fr-mic", null);
+	try {
+		S.stream = await navigator.mediaDevices.getUserMedia({ audio: dev ? { deviceId: { exact: dev }, echoCancellation: true, noiseSuppression: true } : { echoCancellation: true, noiseSuppression: true } });
+	} catch (e) {
+		if (dev) { store.set("fr-mic", null); return ensureMic(); }  // saved device gone (headset unplugged): fall back
+		S.micOn = false; updateMicUi(); toast("No microphone access, typing only", true); return null; // never alert(): it swallows the next click
+	}
+	startMeter(S.stream);
+	fillDevices();
+	updateMicUi();
+	return S.stream;
+}
+function stopMic() { if (S.stream) S.stream.getTracks().forEach(t => t.stop()); S.stream = null; S.level = 0; updateMicUi(); }
+function updateMicUi() {
+	$("#micBtn").textContent = S.micOn ? "🎙 Mic on" : "🔇 Mic off";
+	$("#micBtn").title = S.micOn ? "Click to turn the mic off (notes are typed only)" : "Click to turn the mic on";
+	$("#micBtn").classList.toggle("on", S.micOn);
+	$("#micBtn").classList.toggle("off", !S.micOn);
+	const tr = S.stream && S.stream.getAudioTracks()[0];
+	$("#genBtn").hidden = !S.micOn; $("#genTextBtn").hidden = S.micOn;   // one General button at a time: mic on = record, mic off = type
+	$("#mic").classList.toggle("off", !tr);
+	$("#mic").classList.toggle("typing", !S.micOn && !!S.pdf);
+	$("#mic .dev").textContent = tr ? (tr.label || "microphone") : (!S.micOn ? (S.pdf ? "🔇 Mic off · typing only" : "mic off") : S.asleep ? "mic asleep · wakes with the next note" : "mic not started");
+	setTitle();
+}
+// Tab title: document first, like Google Docs or Overleaf, so narrow tabs still tell PDFs apart; the
+// mic icon says it is the reader. "(3)" = notes in this round, "●" = recording now.
+const GENERIC = /^(main|review|index|draft|document|output|thesis|paper|manuscript|report|out)$/i;
+const SKIP_DIR = /^(_.*|build|out|output|dist|workflow|review|pdfs?|tmp|feedback)$/i;
+function shortName(path) {
+	const parts = (path || "").split("/"), stem = parts.pop().replace(/\.pdf$/i, "");
+	if (!GENERIC.test(stem)) return stem;
+	const dir = parts.reverse().find(d => d && !SKIP_DIR.test(d));
+	return dir ? `${dir}/${stem}` : stem;
+}
+function setTitle() {
+	if (!S.pdfPath) { document.title = "Review queue"; return; }
+	const n = roots().length;
+	document.title = (S.active && S.active.rec ? "● " : "") + (n ? `(${n}) ` : "") + shortName(S.pdfPath);
+}
+setInterval(() => {
+	if (S.stream && !S.active && Date.now() - S.lastUse > SLEEP_MIN * 60e3) { stopMic(); S.asleep = true; updateMicUi(); }
+}, 30e3);
+function toggleMic() { if (!S.micOn) return micOnNow(); S.micOn = false; stopMic(); updateMicUi(); }
+async function fillDevices() {
+	const sel = $("#devSel"); const cur = S.stream && S.stream.getAudioTracks()[0]?.getSettings().deviceId;
+	const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+	sel.innerHTML = "";
+	for (const d of devs) { const o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || "microphone"; if (d.deviceId === cur) o.selected = true; sel.appendChild(o); }
+}
+$("#mic").addEventListener("click", e => { if (e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return; if (!S.stream) { micOnNow(); return; } fillDevices(); $("#mic").classList.toggle("pick"); });
+$("#devSel").addEventListener("change", async e => { store.set("fr-mic", e.target.value); stopMic(); S.micOn = true; await ensureMic(); $("#mic").classList.remove("pick"); toast("Mic: " + $("#mic .dev").textContent); });
+navigator.mediaDevices?.addEventListener?.("devicechange", () => { fillDevices(); if (S.stream && !S.stream.active) { stopMic(); ensureMic(); } });
+
+let actx = null;
+function startMeter(stream) {
+	actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+	if (actx.state === "suspended") actx.resume();
+	const an = actx.createAnalyser(); an.fftSize = 1024;
+	actx.createMediaStreamSource(stream).connect(an);
+	const buf = new Float32Array(an.fftSize), cv = $("#meter"), g = cv.getContext("2d");
+	const hist = new Array(16).fill(0);
+	(function draw() {
+		if (!S.stream || S.stream !== stream) { g.clearRect(0, 0, cv.width, cv.height); return; }
+		an.getFloatTimeDomainData(buf);
+		let s = 0; for (const v of buf) s += v * v;
+		S.level = Math.sqrt(s / buf.length);
+		if (S.active) S.active.peak = Math.max(S.active.peak || 0, S.level);
+		hist.shift(); hist.push(Math.min(1, S.level * 12));
+		g.clearRect(0, 0, cv.width, cv.height);
+		const w = cv.width / hist.length;
+		hist.forEach((v, i) => { const h = Math.max(2, v * cv.height); g.fillStyle = v > 0.85 ? "#d62828" : (S.active ? "#d62828" : "#2a9d8f"); g.fillRect(i * w + 1, cv.height - h, w - 2, h); });
+		requestAnimationFrame(draw);
+	})();
+}
+
+function pickMime() {
+	for (const m of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"]) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+	return "";
+}
+
+// ---------- PDF ----------
+const stateUrl = () => "/api/state?busy=" + (S.active ? 1 : 0) + (S.pdfPath ? "&pdf=" + encodeURIComponent(S.pdfPath) : "");
+async function loadPdf() {
+	const st = await api(stateUrl());
+	S.recent = st.recent || [];
+	if (!st.pdf) { S.pdf = null; S.pdfPath = null; S.sig = sigOf(st); updateMicUi(); showEmpty(); return; }
+	$("#docname").textContent = st.pdf;  // no jargon about source links: notes work either way
+	$("#docname").textContent = "↗ " + $("#docname").textContent;
+	$("#docname").title = "Open in your PDF viewer (links work there)\n" + (st.pdf_path || "");
+	$("#sess").textContent = st.session;
+	S.notes = st.notes; S.sel.clear();
+	S.pdfPath = st.pdf_path; S.sig = sigOf(st); S.pendingSig = null;
+	S.mode = st.mode; S.pair = st.pair;
+	document.body.classList.toggle("review", st.mode === "review");
+	document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === st.mode); b.disabled = b.dataset.m !== st.mode && !st.pair; });
+	document.querySelector('#modes [data-m="review"]').title = st.mode === "review" || st.pair ? "Claude's changes from the last round: red struck out, blue new" : "No changes to review yet: they appear after Claude applies a round";
+	S.pdf = await pdfjsLib.getDocument({ url: U("/doc.pdf?t=" + Date.now()) }).promise;
+	S.pages = [];
+	for (let i = 1; i <= S.pdf.numPages; i++) S.pages.push({ num: i, page: await S.pdf.getPage(i), text: null });
+	if (!S.scale) S.scale = fitScale();
+	await render();
+	renderList(); updateMicUi();
+	if (st.show_queue) showOpen();
+}
+// Fit page + gutter into the space left of the sidebar. 0.3: wide pages (photo-book spreads) must fit.
+function fitScale() { const w = $("#pages").clientWidth - 40, pw = S.pages[0].page.view[2]; return Math.max(0.3, Math.min(1.6, (w - GUTTER) / pw)); }
+async function reloadPdf() { await finish({ force: true }); await loadPdf(); }
+function switchMode(m) { if ((m && m === S.mode) || !S.pair) return; openPath(S.pair); }
+document.querySelectorAll("#modes button").forEach(b => b.onclick = () => switchMode(b.dataset.m));
+
+// The PDF reloads itself when it is rebuilt (latexmk) or when Claude opens another one (a review PDF).
+// It waits until the file has stopped changing for one poll, and never while a note is open.
+function sigOf(st) { return st.pdf ? `${st.pdf_path}|${st.pdf_mtime}` : "none"; }
+async function poll() {
+	clearTimeout(S.pollT);
+	try {
+		const st = await api(stateUrl());
+		const sig = sigOf(st);
+		if (st.show_queue && sig === S.sig) showOpen();  // Raycast with no PDF, routed to this tab
+		// Transcripts arrive in the background as you go (the server transcribes each clip when it is saved).
+		if (sig === S.sig && st.notes) {
+			let changed = false;
+			for (const m of st.notes) { const n = S.notes.find(x => x.id === m.id); if (n && m.transcript !== undefined && n.transcript !== m.transcript) { n.transcript = m.transcript; changed = true; } }
+			if (changed) { renderList(); drawPins(); }
+		}
+		if (S.sig !== undefined && sig !== S.sig) {
+			if (S.pendingSig !== sig) S.pendingSig = sig;
+			else if (!S.active && $("#modal").hidden) {
+				const same = st.pdf_path === S.pdfPath;
+				const frac = window.scrollY / Math.max(1, document.body.scrollHeight);
+				if (!same) S.scale = null;
+				await loadPdf();
+				if (same) window.scrollTo(0, frac * document.body.scrollHeight);
+				toast(same ? "PDF rebuilt: reloaded" : `Opened ${st.pdf}`);
+			}
+		}
+	} catch (e) {}
+	S.pollT = setTimeout(poll, 2000);
+}
+// A tab coming back to the front (open-reader activates it) checks at once instead of waiting for
+// Chrome's slowed background timer.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+window.addEventListener("pagehide", () => navigator.sendBeacon(U("/api/bye"), ""));
+
+// ---------- zoom: keeps the spot you look at (or the pointer, for a pinch) where it is ----------
+function zoomTo(scale, cx, cy) {
+	if (!S.pdf) return;
+	scale = Math.max(0.3, Math.min(4, scale));
+	if (Math.abs(scale - S.scale) < 1e-3) return;
+	cx = cx ?? window.innerWidth / 2; cy = cy ?? window.innerHeight / 2;
+	// The page under the anchor point, and where in it (as a fraction) the anchor sits.
+	const p = S.pages.find(p => { const r = p.el.getBoundingClientRect(); return cy >= r.top - 9 && cy <= r.bottom + 9; }) || S.pages[0];
+	const r = p.el.getBoundingClientRect(), fx = (cx - r.left) / r.width, fy = (cy - r.top) / r.height;
+	S.scale = scale;
+	render();
+	const r2 = p.el.getBoundingClientRect();
+	window.scrollBy(0, r2.top + fy * r2.height - cy);
+	$("#pages").scrollLeft += r2.left + fx * r2.width - cx;  // wide pages scroll sideways inside #pages
+}
+async function zoom(f, cx, cy) { await finish({ force: true }); zoomTo(S.scale * f, cx, cy); }
+async function zoomFit() { await finish({ force: true }); if (S.pdf) zoomTo(fitScale()); }
+// Trackpad pinch (Chrome sends it as a wheel event with ctrlKey): re-render once the fingers settle.
+let pinch = null;
+window.addEventListener("wheel", e => {
+	if (!e.ctrlKey || !S.pdf) return;
+	e.preventDefault();
+	if (S.active) return;
+	pinch = pinch || { s: S.scale, x: e.clientX, y: e.clientY };
+	pinch.s *= Math.exp(-e.deltaY / 100);
+	$("#zoomPct").textContent = Math.round(Math.max(0.3, Math.min(4, pinch.s)) * 100) + "%";
+	clearTimeout(pinch.t);
+	pinch.t = setTimeout(() => { const p = pinch; pinch = null; zoomTo(p.s, p.x, p.y); }, 120);
+}, { passive: false });
+
+function showEmpty() {
+	$("#docname").textContent = ""; $("#sess").textContent = "";
+	$("#pages").innerHTML = `<div id="empty"><h2 style="margin-top:0">What to review</h2>
+		<p>Drop a PDF anywhere on this window (from Finder or Raycast), or <button id="pickBtn">choose a file…</button></p>
+		<div id="recentBox"></div></div>`;
+	$("#pickBtn").onclick = () => $("#fileIn").click();
+	fillRecent($("#recentBox"));
+}
+// The start list is a review queue: unfinished rounds first, then PDFs rebuilt since their last
+// round, then ones not reviewed yet; finished ones last and dimmed .
+// Clock times, not "6 h ago": each badge says what happened when ("round finished yesterday"
+// next to a PDF worked on that same day read as wrong).
+function when(t) {
+	const d = new Date(t * 1000), now = new Date();
+	const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+	const days = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 864e5);
+	if (days === 0) return `today ${hm}`;
+	if (days === 1) return `yesterday ${hm}`;
+	if (days < 7) return `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${hm}`;
+	return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+// Grouped by folder, one small heading each, so one project's PDFs sit together. Groups keep the queue's priority order (the folder of the most urgent PDF first),
+// and each row's badge still says where it stands (notes in progress, rebuilt, finished).
+async function fillRecent(box) {
+	let q = [];
+	try { q = await api("/api/queue"); } catch (e) { q = (S.recent || []).map(p => ({ path: p, status: "new", when: 0 })); }
+	let nDone = 0;
+	q = q.filter(it => !(it.status === "done" && ++nDone > 5));
+	if (!q.length) return;
+	const groups = new Map();
+	for (const it of q) {
+		const d = it.path.slice(0, it.path.lastIndexOf("/"));
+		if (!groups.has(d)) groups.set(d, []);
+		groups.get(d).push(it);
+	}
+	for (const [d, items] of groups) {
+		const sec = document.createElement("div"); sec.className = "qgroup";
+		const h = document.createElement("h3"); h.className = "qdir";
+		const parts = d.split("/"), repo = d.match(/\/Repos\/([^/]+)/) || d.match(/iCloud~md~obsidian\/Documents\/([^/]+)/);
+		h.textContent = repo ? repo[1] + " · " + parts.slice(-2).join("/") : parts.slice(-2).join("/");
+		const sm = document.createElement("small"); sm.textContent = d.replace(/^\/Users\/[^/]+\/Library\/Mobile Documents\/iCloud~md~obsidian\/Documents/, "iCloud").replace(/^\/(Users|home)\/[^/]+/, "~") + "/";
+		h.appendChild(sm); h.title = d; sec.appendChild(h);
+		for (const it of items) {
+			const p = it.path, row = document.createElement("div"); row.className = "qrow" + (it.status === "done" ? " done" : "");
+			const b = document.createElement("button"); b.className = "recent";
+			const name = p.split("/").pop();
+			const badge = it.status === "progress" ? `${it.notes} note${it.notes === 1 ? "" : "s"}, last ${when(it.when)}`
+				: it.status === "updated" ? `rebuilt ${when(it.built)}`
+				: it.status === "done" ? `round finished ${when(it.when)}` : it.when ? `built ${when(it.when)}` : "not reviewed yet";
+			b.innerHTML = `<span></span> <em></em>`;
+			b.querySelector("span").textContent = name; b.querySelector("em").textContent = badge;
+			b.title = p; b.onclick = () => openPath(p);
+			const x = document.createElement("button"); x.className = "x"; x.textContent = "×";
+			x.title = "Remove from this list (it comes back when the PDF is rebuilt)";
+			x.onclick = async () => {
+				try { await api("/api/hide", { path: p }); } catch (e) { return toast(e.message, true); }
+				row.remove();
+				if (!sec.querySelector(".qrow")) sec.remove();
+			};
+			row.append(b, x); sec.appendChild(row);
+		}
+		box.appendChild(sec);
+	}
+}
+// A tab whose round already has notes keeps them on screen: another PDF opens in a new tab beside it.
+// The same PDF (or its review PDF) stays here.
+async function openPath(p) {
+	if (S.pdfPath && roots().length && p !== S.pdfPath && p !== S.pair) {
+		closeModal();
+		if (!window.open("/?open=" + encodeURIComponent(p), "_blank")) toast("Chrome blocked the new tab: allow pop-ups for the reader, or finish this round first", true);
+		return;
+	}
+	if (await finish() === false) return;
+	closeModal(); try { await api("/api/open", { path: p }); S.scale = null; await loadPdf(); } catch (e) { toast(e.message, true); } }
+async function uploadFile(f) {
+	if (!f || !/\.pdf$/i.test(f.name)) return toast("Only PDFs", true);
+	if (await finish() === false) return;
+	closeModal();
+	try { await api("/api/upload?name=" + encodeURIComponent(f.name), f, true); S.scale = null; await loadPdf(); toast("Opened " + f.name); } catch (e) { toast(e.message, true); }
+}
+function showOpen() {
+	modal((body, button) => {
+		body.innerHTML = `<h2>What to review</h2><p>Drop a PDF anywhere on this window, paste its path (⌘V), or <button id="pickBtn2">choose a file…</button></p><div id="recentBox2"></div>`;
+		body.querySelector("#pickBtn2").onclick = () => $("#fileIn").click();
+		fillRecent(body.querySelector("#recentBox2"));
+	});
+}
+$("#fileIn").addEventListener("change", e => uploadFile(e.target.files[0]));
+// Paste a PDF path anywhere outside a text box (⌘V) to open it: paths printed in Claude Code, Finder's
+// "Copy as Pathname", quoted or backticked, file:// URLs.
+function pdfPathFrom(text) {
+	let p = (text || "").trim().split("\n")[0].trim().replace(/^[`'"]+|[`'"]+$/g, "").trim();
+	if (p.startsWith("file://")) { try { p = decodeURIComponent(p.slice(7)); } catch (e) {} }
+	p = p.replace(/\\ /g, " ");
+	return /\.pdf$/i.test(p) && /^[\/~]/.test(p) ? p : null;
+}
+document.addEventListener("paste", e => {
+	const el = e.target;
+	if (el && (el.closest?.("textarea, input, [contenteditable]"))) return;
+	const p = pdfPathFrom(e.clipboardData?.getData("text"));
+	if (!p) return toast("Paste a PDF path to open it (ending in .pdf)", true);
+	e.preventDefault(); openPath(p);
+});
+let dragN = 0;
+window.addEventListener("dragenter", e => { if ([...(e.dataTransfer?.types || [])].includes("Files")) { dragN++; document.body.classList.add("dragging"); } });
+window.addEventListener("dragleave", () => { if (--dragN <= 0) { dragN = 0; document.body.classList.remove("dragging"); } });
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => { e.preventDefault(); dragN = 0; document.body.classList.remove("dragging"); uploadFile(e.dataTransfer.files[0]); });
+
+async function render() {
+	const box = $("#pages"); box.innerHTML = "";
+	for (const p of S.pages) {
+		const vp = p.page.getViewport({ scale: S.scale });
+		const wrap = document.createElement("div"); wrap.className = "pagewrap"; wrap.style.width = (vp.width + GUTTER) + "px"; wrap.style.height = vp.height + "px";
+		const div = document.createElement("div");
+		div.className = "page"; div.style.width = vp.width + "px"; div.style.height = vp.height + "px";
+		const c = document.createElement("canvas"), dpr = window.devicePixelRatio || 1;
+		c.width = vp.width * dpr; c.height = vp.height * dpr; c.style.width = vp.width + "px"; c.style.height = vp.height + "px";
+		div.appendChild(c); wrap.appendChild(div); box.appendChild(wrap);
+		p.el = div; p.wrap = wrap; p.vp = vp;
+		p.page.render({ canvasContext: c.getContext("2d"), viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null });
+		// Invisible text on top, so Cmd+F (the browser's own find) works on the PDF.
+		const tl = document.createElement("div"); tl.className = "textLayer"; tl.style.setProperty("--scale-factor", S.scale); div.appendChild(tl);
+		pdfjsLib.renderTextLayer({ textContentSource: p.page.streamTextContent(), container: tl, viewport: vp });
+		div.addEventListener("click", e => onPageClick(e, p));
+	}
+	$("#zoomPct").textContent = Math.round(S.scale * 100) + "%";
+	drawPins();
+	updHbar();
+}
+// Horizontal scrollbar pinned to the window bottom, kept in step with #pages both ways.
+function updHbar() {
+	const pg = $("#pages"), hb = $("#hbar"), r = pg.getBoundingClientRect();
+	document.documentElement.style.setProperty("--hh", document.querySelector("header").offsetHeight + "px");
+	hb.style.left = r.left + "px"; hb.style.width = pg.clientWidth + "px";
+	hb.firstElementChild.style.width = pg.scrollWidth + "px";
+	hb.classList.toggle("show", pg.scrollWidth > pg.clientWidth + 1);
+	hb.scrollLeft = pg.scrollLeft;
+}
+$("#hbar").addEventListener("scroll", () => { const pg = $("#pages"), hb = $("#hbar"); if (Math.abs(pg.scrollLeft - hb.scrollLeft) > 0.5) pg.scrollLeft = hb.scrollLeft; });
+$("#pages").addEventListener("scroll", () => { const pg = $("#pages"), hb = $("#hbar"); if (Math.abs(pg.scrollLeft - hb.scrollLeft) > 0.5) hb.scrollLeft = pg.scrollLeft; });
+window.addEventListener("resize", updHbar);
+$("#sideBtn").onclick = () => { document.body.classList.toggle("showside"); updHbar(); };
+
+async function textAt(p, xbp, ybp) {
+	// Line of PDF text under a point (top-left bp coordinates), the nearest word and its offset.
+	if (!p.text) p.text = (await p.page.getTextContent()).items.filter(it => it.str.trim());
+	const H = p.page.view[3] - p.page.view[1], py = H - ybp;
+	let best = null, bd = 1e9;
+	for (const it of p.text) {
+		const y = it.transform[5], h = it.height || Math.abs(it.transform[3]) || 10;
+		const d = Math.abs(py - (y + 0.35 * h));
+		if (d < bd) { bd = d; best = it; }
+	}
+	if (!best || bd > 30) return { line: "", word: "", offset: null };
+	const y0 = best.transform[5], h0 = best.height || 10;
+	const row = p.text.filter(it => Math.abs(it.transform[5] - y0) < 0.5 * h0).sort((a, b) => a.transform[4] - b.transform[4]);
+	let line = "", word = "", offset = null;
+	for (const it of row) {
+		if (line && !line.endsWith(" ") && !it.str.startsWith(" ")) line += " ";
+		const start = line.length; line += it.str;
+		const x = it.transform[4];
+		if (offset === null && xbp >= x && xbp <= x + it.width) {
+			const i = Math.min(it.str.length - 1, Math.floor((xbp - x) / it.width * it.str.length));
+			const m = [...it.str.matchAll(/\S+/g)].find(m => i >= m.index && i < m.index + m[0].length);
+			if (m) { word = m[0]; offset = start + m.index; }
+		}
+	}
+	return { line, word, offset };
+}
+
+// ---------- pins: a small dot on the text, the number in the margin ----------
+function newId() { return "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+function drawPins() {
+	document.querySelectorAll(".dot:not(.live),.badge").forEach(e => e.remove());
+	const lastY = {};
+	roots().forEach((n, i) => {
+		if (n.kind !== "anchored") return;
+		const p = S.pages[n.page - 1]; if (!p || !p.el) return;
+		const x = n.x * S.scale, y = n.y * S.scale;
+		const d = document.createElement("div"); d.className = "dot"; d.dataset.id = n.id; d.style.left = x + "px"; d.style.top = y + "px"; p.el.appendChild(d);
+		let by = y - 10; if (lastY[n.page] !== undefined && by < lastY[n.page] + 22) by = lastY[n.page] + 22; lastY[n.page] = by;
+		const b = document.createElement("div"); b.className = "badge"; b.dataset.id = n.id; b.textContent = i + 1;
+		b.style.left = (p.vp.width + 10) + "px"; b.style.top = by + "px";
+		b.title = (n.source ? `${n.source.file}:${n.source.line}\n` : "") + [n, ...adds(n)].map(m => m.transcript || m.typed || (m.audio ? "(audio)" : "")).join("\n+ ");
+		if (adds(n).length) b.textContent += "+";
+		b.onmouseenter = () => d.classList.add("hl"); b.onmouseleave = () => d.classList.remove("hl");
+		b.onclick = e => { e.stopPropagation(); showSaved(n); };
+		p.wrap.appendChild(b);
+	});
+}
+
+async function onPageClick(e, p) {
+	if (e.target.closest(".editor")) return;
+	const r = p.el.getBoundingClientRect();
+	const xbp = (e.clientX - r.left) / S.scale, ybp = (e.clientY - r.top) / S.scale;
+	const a = S.active;
+	// Clicking at (or very near) the open pin saves it without starting a new one.
+	if (a && a.note.kind === "anchored" && a.note.page === p.num && Math.hypot(a.note.x - xbp, a.note.y - ybp) * S.scale < 22) return finish();
+	if (await finish() === false) return; // clicking elsewhere saves the open note and starts a new one (not an empty one)
+	const ctx = await textAt(p, xbp, ybp);
+	start({ id: newId(), kind: "anchored", page: p.num, x: +xbp.toFixed(2), y: +ybp.toFixed(2), line_text: ctx.line, word: ctx.word, word_offset: ctx.offset, typed: "", audio: null, created: new Date().toISOString() }, p);
+}
+
+// opts.noMic: a typed or pasted note (⌨ General, + Type): never records, whatever the mic is doing.
+async function start(n, p, opts = {}) {
+	if (actx && actx.state === "suspended") actx.resume();
+	const typed = opts.noMic || !S.micOn;
+	const ed = document.createElement("div"); ed.className = "editor" + (typed ? " typing" : "");
+	ed.innerHTML = `<div class="ctx"></div><textarea placeholder="${typed ? "Type or paste. Enter saves, Esc discards, Shift+Enter new line." : "Speak, or type. Enter saves, Esc discards, Shift+Enter new line."}"></textarea>
+		<div class="warn">⚠ No sound reaching the mic. Check the device in the top bar.</div>
+		<div class="empty">⚠ Nothing to save yet: ${typed ? "type something" : "say or type something"}, or Esc to discard.</div>
+		<div class="row"><span class="recdot"></span><span class="nomic">${opts.noMic ? "⌨ Text only" : "🔇 Mic off"}</span><span class="time muted">${typed ? "" : "starting mic…"}</span><span style="flex:1"></span><button class="stoprec" hidden title="Stop recording and keep only the text (for pasting)">🔇 Text only</button><button class="x">Discard</button><button class="ok">Save ↵</button></div>`;
+	ed.querySelector(".ctx").textContent = (n.parent ? `Adding to note ${num(n)}. ` : "") + (n.kind === "general" ? "General remark (not tied to a place)" : (n.word ? `“${n.word}” in: ` : "") + (n.line_text || "(no text here)"));
+	S.lastUse = Date.now(); S.asleep = false;
+	ed.addEventListener("click", e => e.stopPropagation());
+	const extras = [];
+	if (p) {
+		const x = n.x * S.scale, y = n.y * S.scale, W = p.vp.width;
+		const dot = document.createElement("div"); dot.className = "dot live"; dot.style.left = x + "px"; dot.style.top = y + "px"; p.el.appendChild(dot);
+		const lead = document.createElement("div"); lead.className = "leader"; lead.style.left = x + "px"; lead.style.top = y + "px"; lead.style.width = (W - x + 16) + "px"; p.wrap.appendChild(lead);
+		ed.style.left = (W + 16) + "px"; ed.style.width = (GUTTER - 26) + "px";
+		ed.style.top = Math.max(0, y - 16) + "px";
+		p.wrap.appendChild(ed);
+		extras.push(dot, lead);
+	} else { $("#general").appendChild(ed); }
+	if (n.parent && p) ed.scrollIntoView({ block: "center", behavior: "smooth" });
+	const ta = ed.querySelector("textarea");
+	ta.addEventListener("keydown", e => {
+		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish(); }
+		if (e.key === "Escape") { e.preventDefault(); discard(); }
+	});
+	ed.querySelector(".ok").onclick = () => finish();
+	ed.querySelector(".x").onclick = () => discard();
+	ta.focus({ preventScroll: true });
+
+	ta.addEventListener("input", () => ed.classList.remove("isempty"));
+	const a = S.active = { note: n, el: ed, extras, rec: null, chunks: [], t0: performance.now(), timer: null, peak: 0, noMic: !!opts.noMic };
+	setTitle();
+	const stream = opts.noMic ? null : await ensureMic();
+	// A mic permission prompt (or the device starting) can take focus: give it back to the note,
+	// or the typed letters land on the page as shortcuts.
+	if (S.active === a && document.activeElement !== ta) ta.focus({ preventScroll: true });
+	if (stream && S.active === a) startRec(a, stream);
+	else if (!typed) {
+		ed.classList.add("typing"); ed.querySelector(".time").textContent = "";  // the mic failed to start
+	}
+	// Mic off: clicking the "🔇 Mic off" label turns the mic on and starts recording this note.
+	if (!opts.noMic) {
+		const nm = ed.querySelector(".nomic"); nm.style.cursor = "pointer"; nm.title = "Click to turn the mic on and record this note";
+		nm.onclick = () => micOnNow();
+	}
+}
+
+// Starts recording into an open note. Used when the note opens with the mic on, and when the mic
+// is switched on while a typed note is open.
+function startRec(a, stream) {
+	const ed = a.el, ta = ed.querySelector("textarea");
+	ed.classList.remove("typing"); a.t0 = performance.now(); a.peak = 0;
+	ta.placeholder = "Speak, or type. Enter saves, Esc discards, Shift+Enter new line.";
+	{
+		const mime = pickMime();
+		a.rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+		a.rec.ondataavailable = ev => ev.data.size && a.chunks.push(ev.data);
+		a.rec.start();
+		ed.querySelector(".recdot").classList.add("rec");
+		setTitle();
+		const sb = ed.querySelector(".stoprec"); sb.hidden = false;
+		sb.onclick = async () => {  // pasting text with the mic on: drop the (silent) recording
+			sb.hidden = true; const r = a.rec; a.rec = null; a.noMic = true; clearInterval(a.timer); $("#mic").classList.remove("silent");
+			if (r && r.state !== "inactive") { r.ondataavailable = null; r.stop(); }
+			a.chunks = []; ed.classList.remove("silent"); ed.classList.add("typing"); ed.querySelector(".nomic").textContent = "⌨ Text only";
+			ed.querySelector(".recdot").classList.remove("rec"); ed.querySelector(".time").textContent = "";
+			setTitle(); ta.focus({ preventScroll: true });
+		};
+		a.timer = setInterval(() => {
+			const t = (performance.now() - a.t0) / 1000;
+			ed.querySelector(".time").textContent = t.toFixed(1) + " s";
+			const silent = t > 3 && a.peak < SILENT;
+			ed.classList.toggle("silent", silent); $("#mic").classList.toggle("silent", silent);
+		}, 100);
+	}
+}
+
+// Turn the mic on from any mic-off control; if a typed (not text-only) note is open, record it.
+async function micOnNow() {
+	S.micOn = true; S.asleep = false; updateMicUi();
+	const a = S.active;
+	const stream = await ensureMic();
+	if (stream && a && S.active === a && !a.rec && !a.noMic) { startRec(a, stream); setTitle(); }
+	if (S.active) S.active.el.querySelector("textarea").focus({ preventScroll: true });
+}
+
+function stopRec(a) {
+	return new Promise(res => {
+		clearInterval(a.timer); $("#mic").classList.remove("silent");
+		if (!a.rec || a.rec.state === "inactive") return res(null);
+		a.rec.onstop = () => res(new Blob(a.chunks, { type: a.rec.mimeType }));
+		a.rec.stop();
+	});
+}
+
+// Saves the open note. Returns false, and keeps the note open with a warning, when it would be empty:
+// nothing typed and no recording, or a recording that never heard anything (with the mic off, blanks
+// were saved). opts.force (zoom, reload) drops an empty note instead of asking.
+async function finish(opts = {}) {
+	const a = S.active; if (!a) return;
+	const n = a.note;
+	const typed = a.el.querySelector("textarea").value.trim();
+	const dur = (performance.now() - a.t0) / 1000;
+	const heard = a.rec && a.peak >= SILENT;
+	if (!typed && !heard && dur >= 1.0 && !opts.force) {
+		a.el.classList.remove("isempty"); void a.el.offsetWidth; a.el.classList.add("isempty");
+		a.el.querySelector("textarea").focus({ preventScroll: true });
+		toast(a.rec ? "Nothing heard and nothing typed: speak, type, or Esc to discard" : "Empty note: type something, or Esc to discard", true);
+		return false;
+	}
+	S.active = null;
+	S.lastUse = Date.now();
+	n.typed = typed;
+	const blob = await stopRec(a);
+	n.duration = +dur.toFixed(1);
+	a.el.remove(); a.extras.forEach(e => e.remove());
+	setTitle();
+	if (!n.typed && (!heard || n.duration < 1.0)) return;  // an accidental click, or an empty note dropped on zoom/reload
+	if (blob && blob.size) {
+		const ext = (blob.type.includes("mp4") ? "mp4" : blob.type.includes("ogg") ? "ogg" : "webm");
+		n.audio = `${n.id}.${ext}`;
+		n.peak = +a.peak.toFixed(4);
+	}
+	// A failed save must say so: notes once failed for an hour with nothing on screen.
+	try {
+		if (n.audio) await api(`/api/audio?id=${n.id}&ext=${n.audio.split(".").pop()}`, blob, true);
+		Object.assign(n, await api("/api/note", n));
+	} catch (e) { toast(`Note NOT saved: ${e.message}. Reload the page and say it again.`, true); return; }
+	if (!S.notes.includes(n)) S.notes.push(n);
+	drawPins(); renderList();
+	if (n.audio && a.peak < SILENT && !n.typed) toast(`Note ${num(n)} saved, but it looks silent. Check the mic.`, true);
+	else toast(n.parent ? `Added to note ${num(n)}` : `Saved note ${num(n)}`);
+}
+
+// A second clip or typed line for a saved note (the thing you forgot to say). Same place, same source.
+async function addTo(parent, noMic) {
+	if (await finish() === false) return;
+	closeModal();
+	const n = { id: newId(), parent: parent.id, kind: parent.kind, typed: "", audio: null, created: new Date().toISOString() };
+	if (parent.kind === "anchored") Object.assign(n, { page: parent.page, x: parent.x, y: parent.y, line_text: parent.line_text, word: parent.word, word_offset: parent.word_offset, source: parent.source ?? null });
+	start(n, parent.kind === "anchored" ? S.pages[parent.page - 1] : null, { noMic });
+}
+
+async function discard() {
+	const a = S.active; if (!a) return;
+	S.active = null;
+	await stopRec(a);
+	a.el.remove(); a.extras.forEach(e => e.remove());
+}
+
+// noMic: the ⌨ General button, for pasting or typing a longer remark without recording anything.
+async function general(noMic) {
+	if (S.active && S.active.note.kind === "general" && !S.active.note.parent) return finish();  // pressing General again saves it
+	if (!S.pdf) return;
+	if (await finish() === false) return;
+	start({ id: newId(), kind: "general", typed: "", audio: null, created: new Date().toISOString() }, null, { noMic });
+}
+
+// ---------- modal, playback, delete ----------
+function modal(build) {
+	{ const f = S.onModalClose; S.onModalClose = null; if (f) f(); }  // a note being replaced in the modal saves its edits first
+	const m = $("#modal"), body = m.querySelector(".body"), row = m.querySelector(".row");
+	body.innerHTML = ""; row.querySelectorAll(".extra").forEach(b => b.remove());
+	build(body, (label, fn) => { const b = document.createElement("button"); b.className = "extra"; b.textContent = label; b.onclick = fn; row.insertBefore(b, row.querySelector(".close")); });
+	m.hidden = false;
+}
+function closeModal() {
+	const m = $("#modal"); m.querySelectorAll("audio").forEach(a => a.pause()); m.hidden = true; S.capture = null;
+	const f = S.onModalClose; S.onModalClose = null; if (f) f();
+}
+// Saves edited typed text from an opened note. An edit that empties a note with no recording is
+// refused (Delete is the way to remove it), so a slip can't leave a blank note behind.
+async function saveEdits(edits) {
+	for (const [m, ta] of edits) {
+		const v = ta.value.trim();
+		if (v === m.typed || !S.notes.includes(m)) continue;  // unchanged, or deleted meanwhile
+		if (!v && !m.audio) { toast(`Note ${num(m)} left unchanged: it would be empty. Use Delete to remove it.`, true); continue; }
+		const old = m.typed; m.typed = v; m.edited = new Date().toISOString();
+		try { Object.assign(m, await api("/api/note", m)); toast(`Edited note ${num(m)}`); }
+		catch (e) { m.typed = old; toast(`Edit NOT saved: ${e.message}`, true); }
+	}
+	drawPins(); renderList();
+}
+$("#modal .close").onclick = closeModal;
+$("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
+
+function showSaved(n) {
+	modal((body, button) => {
+		const head = (n.kind === "general" ? "General remark" : (n.source ? `${n.source.file}:${n.source.line}` : `Page ${n.page}`)) + ` · note ${num(n)}`;
+		const p = document.createElement("div"); p.className = "pre"; p.textContent = head + (n.line_text ? `\n“${n.line_text}”` : ""); body.appendChild(p);
+		const part = (m, box, first) => {
+			if (m.audio) { const a = document.createElement("audio"); a.controls = true; a.autoplay = first; a.src = U(`/audio/${m.audio}`); box.appendChild(a); }
+			// Typed text opens ready to edit: Enter or closing saves, Esc puts it back, Shift+Enter new line.
+			if (m.typed) {
+				const ta = document.createElement("textarea"); ta.className = "edittyped"; ta.value = m.typed; ta.title = "Edit, then Enter (or close) to save. Esc undoes. Shift+Enter new line.";
+				ta.onkeydown = e => {
+					if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); closeModal(); }
+					if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); ta.value = m.typed; closeModal(); }
+				};
+				box.appendChild(ta); edits.push([m, ta]);
+				if (!edits.focused) { edits.focused = true; setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0); }
+			}
+			const t = document.createElement("div"); t.className = "pre";
+			t.textContent = m.transcript ? `Said: ${m.transcript}` : (m.audio ? "Being transcribed in the background…" : "");
+			if (t.textContent) box.appendChild(t);
+		};
+		const edits = []; S.onModalClose = () => saveEdits(edits);
+		part(n, body, true);
+		for (const m of adds(n)) {
+			const box = document.createElement("div"); box.className = "add"; body.appendChild(box);
+			const h = document.createElement("div"); h.className = "muted"; h.textContent = "Added "; box.appendChild(h);
+			const x = document.createElement("button"); x.textContent = "Delete this addition"; x.onclick = async () => { await delIds([m.id]); showSaved(n); }; h.appendChild(x);
+			part(m, box, false);
+		}
+		button("+ 🎙 Say more", () => addTo(n));
+		button("+ ⌨ Type more", () => addTo(n, true));
+		button("Delete", () => { S.onModalClose = null; closeModal(); delIds([n.id]); });
+	});
+}
+async function delIds(ids) {
+	const r = await api("/api/delete", { ids });
+	const gone = new Set(r.deleted || ids);
+	S.notes = S.notes.filter(x => !gone.has(x.id)); gone.forEach(i => S.sel.delete(i));
+	drawPins(); renderList(); toast(ids.length > 1 ? `Deleted ${ids.length} notes` : "Deleted");
+}
+function confirmBox(title, text, label, fn) {
+	modal((body, button) => {
+		body.innerHTML = `<h2></h2><p></p>`; body.querySelector("h2").textContent = title; body.querySelector("p").textContent = text;
+		button(label, () => { closeModal(); fn(); });
+		$("#modal .extra").classList.add("danger", "on");
+	});
+}
+function playBtn(m) {
+	const b = document.createElement("button"); b.textContent = "▶ Play";
+	b.onclick = e => {
+		e.stopPropagation();
+		if (b._a && !b._a.paused) { b._a.pause(); b.textContent = "▶ Play"; return; }
+		b._a = b._a || new Audio(U(`/audio/${m.audio}`));
+		b._a.onended = () => b.textContent = "▶ Play";
+		b._a.currentTime = 0; b._a.play(); b.textContent = "■ Stop";
+	};
+	return b;
+}
+
+function renderList() {
+	const T = roots();
+	setTitle();
+	$("#count").textContent = T.length; $("#count2").textContent = T.length;
+	$("#selDel").hidden = $("#selClear").hidden = !S.sel.size;
+	$("#selDel").textContent = `Delete ${S.sel.size} selected`;
+	const L = $("#list"); L.innerHTML = "";
+	T.forEach((n, i) => {
+		const d = document.createElement("div"); d.className = "item" + (S.sel.has(n.id) ? " picked" : "");
+		const src = n.kind === "general" ? "general" : (n.source ? `${n.source.file.split("/").pop()}:${n.source.line}` : `p${n.page}`);
+		d.innerHTML = `<div class="head"><input type="checkbox" class="sel" title="Select (to delete several)"><span class="src"></span></div><div class="pin"></div><div class="txt"></div><div class="row"></div>`;
+		const cb = d.querySelector(".sel"); cb.checked = S.sel.has(n.id);
+		cb.onclick = e => { e.stopPropagation(); cb.checked ? S.sel.add(n.id) : S.sel.delete(n.id); renderList(); };
+		d.querySelector(".src").textContent = `${i + 1} · ${src}${n.audio ? ` · 🎙 ${n.duration}s` : ""}`;
+		const pin = d.querySelector(".pin");
+		if (n.kind === "general") pin.remove();
+		else pin.textContent = n.line_text ? `on: “${(n.word ? n.word + "” in “" : "") + n.line_text.slice(0, 120)}”` : "on: not on text (photo or blank space)";
+		d.querySelector(".txt").textContent = n.transcript || n.typed || (n.line_text ? "“" + n.line_text.slice(0, 80) + "”" : "");
+		const row = d.querySelector(".row");
+		if (n.audio) row.appendChild(playBtn(n));
+		const o = document.createElement("button"); o.textContent = "Open"; o.onclick = e => { e.stopPropagation(); showSaved(n); }; row.appendChild(o);
+		const ad = document.createElement("button"); ad.textContent = "+ 🎙"; ad.title = "Add something you forgot, spoken"; ad.onclick = e => { e.stopPropagation(); addTo(n); }; row.appendChild(ad);
+		const at = document.createElement("button"); at.textContent = "+ ⌨"; at.title = "Add something you forgot, typed or pasted (never records)"; at.onclick = e => { e.stopPropagation(); addTo(n, true); }; row.appendChild(at);
+		const del = document.createElement("button"); del.textContent = "Delete"; del.title = "Delete this note, its recording and anything added to it";
+		del.style.cssText = "color:#fff;background:#c62828;border-color:#c62828";
+		del.onclick = e => { e.stopPropagation(); confirmBox(`Delete note ${i + 1}?`, "Its recording and anything added to it go too. This cannot be undone.", "Delete", () => delIds([n.id])); };
+		row.appendChild(del);
+		for (const m of adds(n)) {
+			const sub = document.createElement("div"); sub.className = "sub";
+			sub.textContent = "+ " + (m.transcript || m.typed || (m.audio ? `🎙 ${m.duration}s` : ""));
+			if (m.audio) { sub.append(" "); sub.appendChild(playBtn(m)); }
+			d.insertBefore(sub, row);
+		}
+		d.onclick = () => { if (n.kind === "anchored") document.querySelector(`.badge[data-id="${n.id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }); };
+		L.appendChild(d);
+	});
+}
+$("#selAll").onclick = () => { const T = roots(); if (S.sel.size === T.length) S.sel.clear(); else T.forEach(n => S.sel.add(n.id)); renderList(); };
+$("#selClear").onclick = () => { S.sel.clear(); renderList(); };
+$("#selDel").onclick = () => { const ids = [...S.sel]; confirmBox(`Delete ${ids.length} notes?`, "Their recordings and anything added to them go too. This cannot be undone.", `Delete ${ids.length}`, () => delIds(ids)); };
+
+// Finish round hands the round on at once: the server finishes transcribing in the background,
+// and the skill's process.py waits for it, so the reader is free for the next document straight away.
+async function finishRound() {
+	if (await finish() === false) return;
+	S.micOn = false; stopMic(); updateMicUi();   // nothing more to record once the round is finished: mic off until turned on again
+	if (!roots().length) return toast("No notes yet. For a review PDF that means every change is accepted: nothing to send.");
+	let r;
+	try { r = await api("/api/finish", {}); }
+	catch (e) { modal(body => body.textContent = "Finishing failed: " + e.message + "\nYour notes are saved. Try again, or run process.py."); return; }
+	let copied = false;
+	try { await navigator.clipboard.writeText(r.command); copied = true; } catch (e) {}
+	modal((body, button) => {
+		body.innerHTML = `<h2>Round saved</h2><p>${r.kept} notes. ${copied ? "The command is on your clipboard" : "Copy this command"}: paste it into Claude Code (${r.where || "in any Claude Code session"}) and press Enter.</p>`;
+		const c = document.createElement("code"); c.textContent = r.command; body.appendChild(c);
+		const q = document.createElement("p"); q.className = "muted";
+		q.textContent = (r.left ? `${r.left} clip${r.left === 1 ? " is" : "s are"} still being transcribed in the background. Paste now anyway: Claude waits for it. ` : "Everything is transcribed. ")
+			+ "You can carry on here or open the next PDF. The mic is off: press the mic button when you want it again.";
+		body.appendChild(q);
+		button("Copy again", () => navigator.clipboard.writeText(r.command).then(() => toast("Copied")));
+	});
+	S.notes = []; S.sel.clear(); drawPins(); renderList();
+	$("#sess").textContent = r.new_session;
+}
+
+function showHelp() {
+	modal((body, button) => {
+		body.innerHTML = `<h2>Shortcuts</h2><p class="muted">Work when you are not typing in a note. Click <b>Change</b>, then press the new key.</p><table id="keys"></table>
+		<h3>While a note is open</h3><table>
+			<tr><td>Save</td><td><kbd>Enter</kbd></td><td></td></tr>
+			<tr><td>New line in the note</td><td><kbd>Shift</kbd>+<kbd>Enter</kbd></td><td></td></tr>
+			<tr><td>Discard</td><td><kbd>Esc</kbd></td><td></td></tr></table>
+		<h3>Saving, discarding, deleting</h3><ul>
+			<li><b>Save</b> a note: Enter, the Save button, clicking its pin again, or just clicking somewhere else (that saves it and starts the next one). A general remark also saves when you press General again.</li>
+			<li>Every saved note is on disk at once. Closing the tab or the reader loses nothing, and the next start resumes the round.</li>
+			<li><b>Discard</b> the note you are making: Esc or Discard. A click under a second with nothing typed is ignored.</li>
+			<li><b>Add</b> something you forgot: <b>+ 🎙</b> (spoken) or <b>+ ⌨</b> (typed or pasted) in the list, or open the note (its number in the margin). It is kept with the note.</li>
+			<li><b>Delete</b> a saved note: open it, then Delete. <b>Several</b>: tick them in the list, then Delete selected (Select all ticks every one).</li>
+			<li><b>Write / Review changes</b> (top left): after Claude applies a round, Review shows its changes (red struck out, blue new). No note on a change accepts it.</li>
+			<li><b>Play back</b>: ▶ Play in the list, or open the note.</li>
+			<li><b>Finish round</b> copies a command (<code>/apply-feedback …</code> by default) for you to paste into Claude Code, at once. Clips are transcribed in the background as you go; Claude waits for any that are left.</li>
+			<li><b>Mic off</b>: the amber pill in the middle says so. <b>⌨ General</b> and <b>+ ⌨</b> never record, whatever the mic does (for pasting). In a recording note, <b>🔇 Text only</b> drops the recording. A note with nothing typed and nothing heard is not saved: it shakes and waits.</li>
+			<li><b>Find</b>: Cmd+F (the browser's own search) works on the PDF text. <b>Zoom</b>: pinch, Cmd + / Cmd −, or the buttons; the % button (or Cmd 0) fits the width.</li>
+			<li><b>Tabs</b>: each tab is its own document and round. Opening another PDF from a tab with notes opens a new tab, so nothing is hidden.</li>
+			<li><b>Mic check</b>: the bars in the top bar move when the mic hears you. Click them to pick another input. A note silent for 3 s turns red. After ${SLEEP_MIN} idle minutes the mic is released (no orange dot); the next note wakes it.</li>
+			<li>The PDF <b>reloads itself</b> when it is rebuilt, or when Claude opens a review PDF of its changes.</li></ul>`;
+		const t = body.querySelector("#keys");
+		for (const [k, a] of Object.entries(ACTIONS)) {
+			const tr = document.createElement("tr");
+			tr.innerHTML = `<td></td><td><kbd></kbd></td><td><button>Change</button></td>`;
+			tr.children[0].textContent = a.label; tr.querySelector("kbd").textContent = keyName(KEYS[k]);
+			tr.querySelector("button").onclick = () => { tr.querySelector("kbd").textContent = "press a key…"; S.capture = { action: k, el: tr.querySelector("kbd") }; };
+			t.appendChild(tr);
+		}
+		button("Reset to defaults", () => { KEYS = Object.fromEntries(Object.entries(ACTIONS).map(([k, a]) => [k, a.def])); store.set("fr-keys", {}); showHelp(); });
+	});
+}
+
+document.addEventListener("keydown", e => {
+	if (S.capture) {  // rebinding a shortcut
+		e.preventDefault();
+		if (e.key === "Escape") { S.capture.el.textContent = keyName(KEYS[S.capture.action]); S.capture = null; return; }
+		if (["Shift", "Meta", "Control", "Alt", "Enter"].includes(e.key)) return;
+		const clash = Object.entries(KEYS).find(([k, v]) => v === e.key && k !== S.capture.action);
+		if (clash) { toast(`“${keyName(e.key)}” is already used for: ${ACTIONS[clash[0]].label}`, true); return; }
+		KEYS[S.capture.action] = e.key; store.set("fr-keys", KEYS);
+		S.capture.el.textContent = keyName(e.key); S.capture = null; return;
+	}
+	// Cmd/Ctrl + − 0 zoom the PDF (re-rendered sharp) instead of the whole page.
+	if ((e.metaKey || e.ctrlKey) && S.pdf && ["=", "+", "-", "0"].includes(e.key)) { e.preventDefault(); return e.key === "0" ? zoomFit() : zoom(e.key === "-" ? 1 / 1.15 : 1.15); }
+	if (["TEXTAREA", "SELECT"].includes(e.target.tagName) || (e.target.tagName === "INPUT" && e.target.type !== "checkbox") || e.metaKey || e.ctrlKey || e.altKey) return;
+	if (e.key === "Escape") { if (!$("#modal").hidden) closeModal(); else discard(); return; }
+	const hit = Object.entries(KEYS).find(([, v]) => v === e.key);
+	if (hit) { e.preventDefault(); ACTIONS[hit[0]].run(); }
+});
+$("#micBtn").onclick = toggleMic;
+$("#genBtn").onclick = () => general();
+$("#genTextBtn").onclick = () => general(true);
+$("#zoomPct").onclick = () => zoomFit();
+$("#openBtn").onclick = showOpen;
+$("#zoomIn").onclick = () => zoom(1.15);
+$("#zoomOut").onclick = () => zoom(1 / 1.15);
+$("#helpBtn").onclick = showHelp;
+$("#finishBtn").onclick = finishRound;
+$("#docname").onclick = async () => { if (!S.pdfPath) return; try { await api("/api/external", {}); toast("Opened in your PDF viewer"); } catch (e) { toast(e.message, true); } };
+window.addEventListener("beforeunload", e => { if (S.active) { e.preventDefault(); e.returnValue = ""; } });
+
+updateMicUi();
+// Mic stays off on load (a live mic on load feels intrusive): a big Start button turns it on and begins the session.
+// A fresh tab opened from the queue (?open=<path>) loads that PDF. A tab open-reader routed a PDF to
+// (#t=<id>, also a reload) already has it on the server and goes straight to it. A plain visit shows
+// the review queue first.
+(async () => {
+	if (OPEN_ON_LOAD) { try { await api("/api/open", { path: OPEN_ON_LOAD }); } catch (e) { toast(e.message, true); } }
+	await loadPdf();
+	if (START_ON_RECENT && S.pdf) showOpen();   // no Start overlay: opens straight on the page, mic off until turned on
+})().finally(poll);
+</script>
+</body>
+</html>

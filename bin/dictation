@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""Dictation dictionary helper: one markdown file of Terms and Corrections for all local dictation.
+
+    dictation prompt [--extra terms.txt] [--max-chars 600]   Whisper --prompt string
+    dictation fix < transcript.txt                           apply the Corrections section
+    dictation budget                                         what fits in the prompt, what is left out
+    dictation add-term "CsSnI3" [--more]                     append a term (--more: to More terms)
+    dictation add-fix "sees pebbly" "CsPbI3"                 append a correction
+    dictation hint < hook.json                               Claude Code hook: flag Corrections found in the prompt
+    dictation vibe [--restart]                               write the prompt into Vibe's settings
+                                                             (add-term does this itself when the prompt changes)
+
+The dictionary is $FR_DICTIONARY (default ~/.feedback-reader/dictionary.md); see
+dictionary.example.md for the format. A missing dictionary means no prompt and no corrections.
+Stdlib only.
+"""
+import os
+import argparse
+import re
+import sys
+from pathlib import Path
+
+def _setting(name):
+    """Environment first, then ~/.feedback-reader/config.env (or $FR_CONFIG), as reader/config.py."""
+    if os.environ.get(name):
+        return os.environ[name]
+    cfg = Path(os.environ.get("FR_CONFIG") or Path.home() / ".feedback-reader" / "config.env").expanduser()
+    try:
+        for line in cfg.read_text().splitlines():
+            k, _, v = line.strip().removeprefix("export ").partition("=")
+            if k.strip() == name and v:
+                return v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+DICT = Path(_setting("FR_DICTIONARY") or Path(_setting("FR_HOME") or Path.home() / ".feedback-reader") / "dictionary.md").expanduser()
+
+
+def sections():
+    out, cur = {"terms": [], "more": [], "corrections": []}, None
+    if not DICT.exists():
+        return out
+    for line in DICT.read_text().splitlines():
+        h = line.strip().lower()
+        if h.startswith("## "):
+            cur = "more" if "more" in h else "terms" if "term" in h else "corrections" if "correction" in h else None
+            continue
+        if cur and line.startswith("- "):
+            item = line[2:].strip()
+            if cur == "corrections":
+                if "->" in item:
+                    a, b = (s.strip() for s in item.split("->", 1))
+                    out[cur].append((a, b))
+            elif item:
+                out[cur].append(item)
+    return out
+
+
+def ordered_terms(extra=()):
+    """Document terms, then Terms, then More terms, without duplicates: the prompt priority order."""
+    sec, seen, terms = sections(), set(), []
+    for t in list(extra) + sec["terms"] + sec["more"]:
+        k = t.lower()
+        if k not in seen:
+            seen.add(k)
+            terms.append(t)
+    return terms
+
+
+def fit(extra=(), max_chars=600):
+    """Whisper keeps at most 224 prompt tokens; 600 characters of jargon stays under that."""
+    used, left, n = [], [], len("Glossary: .")
+    for t in ordered_terms(extra):
+        if not left and n + len(t) + 2 <= max_chars:
+            used.append(t)
+            n += len(t) + 2
+        else:
+            left.append(t)
+    return used, left
+
+
+def build_prompt(extra=(), max_chars=600):
+    return "Glossary: " + ", ".join(fit(extra, max_chars)[0]) + "."
+
+
+_WORDS = None
+
+
+def _english(w):
+    global _WORDS
+    if _WORDS is None:
+        try:
+            _WORDS = set(Path("/usr/share/dict/words").read_text().lower().split())
+        except OSError:
+            _WORDS = set()
+    return w.lower() in _WORDS
+
+
+def _cased(term):
+    """Terms whose exact casing carries meaning: formulas and acronyms (CsPbI3, MACE, NequIP).
+    An all-capitals term that is also an English word (TEA, PEA) is left alone, or every "tea"
+    would become "TEA". Give it a Correction instead if it keeps coming out wrong."""
+    if not (any(c.isdigit() for c in term) or any(c.isupper() for c in term[1:])):
+        return False
+    return not (term.isalpha() and term.isupper() and _english(term))
+
+
+def fix(text):
+    # Whisper sometimes returns a whole clip in capitals. Bring it back to sentence case first,
+    # the term pass below then restores acronyms and formulas.
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) > 8 and sum(c.isupper() for c in letters) / len(letters) > 0.8:
+        text = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text.lower())
+    # Longest first, so a longer entry wins over a shorter overlapping one.
+    for a, b in sorted(sections()["corrections"], key=lambda p: -len(p[0])):
+        text = re.sub(r"(?<!\w)" + re.escape(a) + r"(?!\w)", b, text, flags=re.I)
+    # Canonical casing for cased terms: "cspbbr3" or "CSPBBR3" -> "CsPbBr3", "mace" -> "MACE".
+    sec = sections()
+    for t in sorted((t for t in sec["terms"] + sec["more"] if _cased(t)), key=len, reverse=True):
+        text = re.sub(r"(?<!\w)" + re.escape(t) + r"(?!\w)", t, text, flags=re.I)
+    return text
+
+
+def append(section, line):
+    if not DICT.exists():
+        DICT.parent.mkdir(parents=True, exist_ok=True)
+        DICT.write_text("# Dictation dictionary\n\n## Terms\n\n## More terms\n\n## Corrections\n")
+    lines = DICT.read_text().splitlines()
+    idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## " + section))
+    end = idx + 1
+    while end < len(lines) and not lines[end].startswith("## "):
+        end += 1
+    while end > idx + 1 and not lines[end - 1].strip():
+        end -= 1
+    lines.insert(end, line)
+    DICT.write_text("\n".join(lines) + "\n")
+
+
+def hint(prompt):
+    """For a Claude Code UserPromptSubmit hook. Claude's own dictation (Anthropic cloud) takes no
+    custom vocabulary, so instead the Corrections that match the typed or dictated prompt are
+    handed to Claude as context. Prints nothing when nothing matches, so it costs no tokens then."""
+    hits = []
+    for a, b in sorted(sections()["corrections"], key=lambda p: -len(p[0])):
+        if a.lower() != b.lower() and re.search(r"(?<!\w)" + re.escape(a) + r"(?!\w)", prompt, flags=re.I):
+            if (a, b) not in hits:
+                hits.append((a, b))
+    if hits:
+        print(f"Possible dictation mishearings ({DICT.name}). Read these as the right-hand"
+              " word where the context fits: " + "; ".join(f"{a} -> {b}" for a, b in hits[:15]) + ".")
+
+
+VIBE_ID = "github.com.thewh1teagle.vibe"
+VIBE_SUPPORT = Path.home() / "Library/Application Support" / VIBE_ID
+
+
+def _vibe_running():
+    import subprocess
+    # Case-insensitive: the app is installed as /Applications/vibe.app (lowercase). The old
+    # case-sensitive check never matched, so pushes were written under a running Vibe and lost.
+    return subprocess.run(["pgrep", "-if", "vibe.app/Contents/MacOS/vibe"], capture_output=True).returncode == 0
+
+
+def _vibe_busy():
+    """Recording or transcribing: a recording that started and has not been finalised, or any
+    log line in the last 60 seconds. Never restart Vibe then."""
+    import datetime
+    import json
+    logs = sorted(VIBE_SUPPORT.glob("log_*.txt"))
+    if not logs:
+        return False
+    lines = logs[-1].read_text(errors="ignore").splitlines()[-200:]
+    msgs = []
+    for l in lines:
+        try:
+            msgs.append(json.loads(l))
+        except ValueError:
+            pass
+    if not msgs:
+        return False
+    last = datetime.datetime.fromisoformat(msgs[-1]["timestamp"].replace("Z", "+00:00")[:26] + "+00:00")
+    if (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds() < 60:
+        return True
+    rec = [m["fields"].get("message", "") for m in msgs if m["fields"].get("message", "") in ("Stream started playing", "Finalizing writer")]
+    return bool(rec) and rec[-1] == "Stream started playing"
+
+
+def _vibe_stores():
+    """Every place Vibe keeps its Whisper prompt: webview localStorage (UTF-16 JSON values, Vibe
+    3.0.x) and app_config.json (newer Vibe, key transcription.modelOptions)."""
+    import glob
+    return glob.glob(str(Path.home() / "Library/WebKit" / VIBE_ID / "WebsiteData/Default/*/*/LocalStorage/localstorage.sqlite3"))
+
+
+def _swap(obj, prompt):
+    if isinstance(obj, str):
+        return (prompt, obj != prompt) if obj == "SYNCME" or obj.startswith("Glossary: ") else (obj, False)
+    if isinstance(obj, dict):
+        hit = False
+        for k, v in obj.items():
+            if k == "init_prompt" and isinstance(v, str) and v != prompt and (not v or v == "SYNCME" or v.startswith("Glossary: ")):
+                obj[k], h = prompt, True
+            else:
+                obj[k], h = _swap(v, prompt)
+            hit |= h
+        return obj, hit
+    if isinstance(obj, list):
+        res = [_swap(v, prompt) for v in obj]
+        return [r[0] for r in res], any(r[1] for r in res)
+    return obj, False
+
+
+def _vibe_write(prompt, dry=False):
+    """Returns how many stored settings differ from (and, unless dry, were set to) the prompt."""
+    import json
+    import sqlite3
+    done = 0
+    for db in _vibe_stores():
+        con = sqlite3.connect(db)
+        for key, val in con.execute("SELECT key, value FROM ItemTable").fetchall():
+            text = val.decode("utf-16-le") if isinstance(val, bytes) else str(val)
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                continue
+            new, hit = _swap(obj, prompt)
+            if hit:
+                done += 1
+                if not dry:
+                    con.execute("UPDATE ItemTable SET value=? WHERE key=?", (json.dumps(new).encode("utf-16-le"), key))
+        con.commit()
+        con.close()
+    cfg = VIBE_SUPPORT / "app_config.json"
+    if cfg.exists():
+        try:
+            obj = json.loads(cfg.read_text() or "{}")
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("transcription.modelOptions"), dict):
+            new, hit = _swap(obj, prompt)
+            if hit:
+                done += 1
+                if not dry:
+                    cfg.write_text(json.dumps(new, indent=2))
+    return done
+
+
+def vibe(restart=False, quiet=False):
+    """Write the prompt into Vibe's settings, which its hotkey dictation and file transcription
+    both use (Whisper init_prompt; Vibe applies no Corrections, only this prompt).
+
+    The first time, type SYNCME into Vibe > Settings > Prompt and quit Vibe; after that the
+    "Glossary: ..." value is found and replaced. Vibe rewrites its settings on exit, so it must
+    not be running while this writes: with --restart (and from add-term) a running, idle Vibe is
+    quit, updated and relaunched hidden. A busy Vibe (recording or transcribing) is left alone.
+    """
+    import subprocess
+    import time
+    say = (lambda *a: None) if quiet else print
+    prompt = build_prompt()
+    if not _vibe_write(prompt, dry=True):
+        say("Vibe prompt already up to date.")
+        return True
+    relaunch = False
+    if _vibe_running():
+        if not restart:
+            sys.exit("Vibe is running and rewrites its settings on exit. Quit it, or rerun with --restart.")
+        if _vibe_busy():
+            print("Vibe is busy (recording or transcribing); not restarting it. Run `dictation vibe --restart` later.")
+            return False
+        subprocess.run(["osascript", "-e", f'tell application id "{VIBE_ID}" to quit'], capture_output=True)
+        for _ in range(30):
+            if not _vibe_running():
+                break
+            time.sleep(0.5)
+        else:
+            print("Vibe did not quit; prompt not pushed. Run `dictation vibe --restart` later.")
+            return False
+        relaunch = True
+    n = _vibe_write(prompt)
+    if relaunch:
+        subprocess.run(["open", "-g", "-b", VIBE_ID])
+    if not n:
+        print("No Vibe prompt found. Once: Vibe > Settings > Prompt, type SYNCME, quit Vibe, rerun this.")
+        return False
+    say(f"Vibe prompt updated ({n} setting{'s' if n > 1 else ''})" + (", Vibe relaunched." if relaunch else "."))
+    return True
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("prompt")
+    p.add_argument("--extra", type=Path, help="file with one priority term per line")
+    p.add_argument("--max-chars", type=int, default=600)
+    sub.add_parser("fix")
+    sub.add_parser("hint")
+    b = sub.add_parser("budget")
+    b.add_argument("--extra", type=Path)
+    t = sub.add_parser("add-term")
+    t.add_argument("term")
+    t.add_argument("--more", action="store_true")
+    f = sub.add_parser("add-fix")
+    f.add_argument("heard")
+    f.add_argument("meant")
+    v = sub.add_parser("vibe")
+    v.add_argument("--restart", action="store_true", help="quit a running, idle Vibe, update, relaunch hidden")
+    a = ap.parse_args()
+    if a.cmd == "prompt":
+        extra = [l.strip() for l in a.extra.read_text().splitlines() if l.strip()] if a.extra else []
+        print(build_prompt(extra, a.max_chars))
+    elif a.cmd == "fix":
+        sys.stdout.write(fix(sys.stdin.read()))
+    elif a.cmd == "hint":
+        import json
+        try:
+            hint(json.load(sys.stdin).get("prompt", ""))
+        except Exception:
+            pass  # a hook must never block a prompt
+    elif a.cmd == "budget":
+        extra = [l.strip() for l in a.extra.read_text().splitlines() if l.strip()] if a.extra else []
+        used, left = fit(extra)
+        p = build_prompt(extra)
+        print(f"prompt {len(p)}/600 chars, {len(used)} terms in, {len(left)} left out (casing still fixed for those)")
+        if left:
+            print("left out: " + ", ".join(left[:40]) + (" ..." if len(left) > 40 else ""))
+    elif a.cmd == "add-term":
+        sec = sections()
+        if a.term.lower() not in (x.lower() for x in sec["terms"] + sec["more"]):
+            before = build_prompt()
+            append("more terms" if a.more else "terms", f"- {a.term}")
+            # Keep Vibe in step automatically, but only when the prompt actually changed.
+            if build_prompt() != before:
+                vibe(restart=True)
+    elif a.cmd == "add-fix":
+        if (a.heard.lower(), a.meant) not in ((h.lower(), m) for h, m in sections()["corrections"]):
+            append("corrections", f"- {a.heard} -> {a.meant}")
+    elif a.cmd == "vibe":
+        vibe(restart=a.restart)
+
+
+if __name__ == "__main__":
+    main()

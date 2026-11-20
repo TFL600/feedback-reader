@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Render email drafts (markdown) to PDF and open them in the click-to-dictate feedback reader,
+# so spoken comments can be pinned to exact places in each draft.
+#
+#   email-to-reader drafts.md
+#
+# One email per page (a `---` line between drafts becomes a page break). The PDF goes to
+# $FR_EMAIL_DRAFTS (default ~/.feedback-reader/drafts/email-drafts). Keep the folder name
+# email-drafts: the reader recognises it, so the round is filed as "email". Opens it via open-reader.
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/_config.sh"
+
+[ $# -ge 1 ] || { echo "usage: email-to-reader <drafts.md>" >&2; exit 1; }
+MD="$1"
+OUT_DIR="${FR_EMAIL_DRAFTS:-${FR_DRAFTS:-${FR_HOME:-$HOME/.feedback-reader}/drafts}/email-drafts}"
+
+[ -f "$MD" ] || { echo "no draft file: $MD" >&2; exit 1; }
+mkdir -p "$OUT_DIR"
+PDF="$OUT_DIR/email-drafts-$(date +%Y-%m-%d-%H%M%S).pdf"
+
+# One email per page (drafts are separated by --- lines, which pandoc would otherwise read as a
+# rule, or YAML at the top). Each page gets "Email k of N" at the top and, unless it is the last,
+# a big blue "next email" banner at the bottom: the white space after a short email made the
+# following pages easy to miss.
+python3 -I - "$MD" <<'PY' |
+import re, sys
+parts = re.split(r"(?m)^---[ \t]*$", open(sys.argv[1]).read())
+parts = [p.strip() for p in parts if p.strip()]
+n = len(parts)
+def tex(s):
+    return re.sub(r"([&%$#_{}])", r"\\\1", s)
+def who(p):
+    m = re.search(r"(?m)^(?:Hi|Dear|Hello)\s+([^,\n]+),", p) or re.search(r"\*\*To:\*\*\s*([^(|\n]+)", p)
+    return tex(m.group(1).strip()) if m else ""
+# Show image attachments in the PDF under their "[Attachment: /path]" line, so the figure can be
+# reviewed with the email. Other file types stay as the path line only.
+IMG = re.compile(r"(?m)^\[Attachment:\s*(.+?\.(?:png|jpe?g|gif|pdf))\s*\]\s*$", re.I)
+def embed(m):
+    import os
+    path = os.path.expanduser(m.group(1).strip())
+    if not os.path.exists(path):
+        return m.group(0) + "  (file not found)"
+    return m.group(0) + "\n\n" + rf"\begin{{center}}\includegraphics[width=\linewidth,height=0.5\textheight,keepaspectratio]{{\detokenize{{{path}}}}}\end{{center}}"
+parts = [IMG.sub(embed, p) for p in parts]
+out = []
+for i, p in enumerate(parts, 1):
+    if n > 1:
+        out.append(rf"\noindent{{\small\color{{gray}}Email {i} of {n}}}")
+    out.append(p)
+    if i < n:
+        to = who(parts[i])
+        out.append(r"\vfill\begin{center}\colorbox{blue!10}{\parbox{0.9\linewidth}{\centering\Large\bfseries\color{blue!70!black} "
+                   rf"$\downarrow$ Next page: email {i + 1} of {n}{', to ' + to if to else ''} $\downarrow$}}}}\end{{center}}\newpage")
+print("\n\n".join(out))
+PY
+	pandoc -f markdown+hard_line_breaks -o "$PDF" --pdf-engine=xelatex \
+		-V geometry:margin=2.5cm -V fontsize=12pt -V mainfont="${FR_FONT:-Helvetica Neue}" -H "$(dirname "$(readlink -f "$0")")/reader-fonts.tex" \
+		-V linestretch=1.3 -V pagestyle=empty \
+		-V 'header-includes=\usepackage{xcolor}\usepackage{graphicx}\usepackage[none]{hyphenat}\frenchspacing\raggedright'
+# hard_line_breaks keeps "Best wishes," and the name on separate lines, as in the email.
+# No hyphenation and ragged right: what the reader extracts under a click matches the draft text.
+
+"$(dirname "$(readlink -f "$0")")/open-reader" "$PDF" >/dev/null
+echo "$PDF"

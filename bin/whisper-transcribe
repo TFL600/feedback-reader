@@ -1,0 +1,34 @@
+#!/bin/bash
+# Transcribe one audio file headlessly with whisper.cpp. Prints plain text.
+#
+#   bin/whisper-transcribe <audio-file>
+#
+# Needs whisper.cpp (brew install whisper-cpp), ffmpeg and a ggml model:
+#   FR_WHISPER_MODEL   path to the model    default ~/.cache/whisper/ggml-large-v3-turbo.bin
+#                      (falls back to the model of the Vibe app, if installed)
+#   WHISPER_LANG       language code        default auto (short clips are often misdetected:
+#                                           the reader sets en unless told otherwise)
+#   WHISPER_EXTRA      file of priority terms, one per line (the document's glossary)
+# The dictation dictionary (bin/dictation) biases Whisper towards its Terms and fixes its
+# Corrections afterwards. Fine for voice notes; for long multi-speaker recordings use a tool
+# with diarization.
+set -eu
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+. "$HERE/_config.sh"
+VIBE_MODEL="$HOME/Library/Application Support/github.com.thewh1teagle.vibe/ggml-large-v3-turbo.bin"
+MODEL="${FR_WHISPER_MODEL:-$HOME/.cache/whisper/ggml-large-v3-turbo.bin}"
+[ -f "$MODEL" ] || [ -n "${FR_WHISPER_MODEL:-}" ] || [ ! -f "$VIBE_MODEL" ] || MODEL="$VIBE_MODEL"
+FFMPEG=$(command -v ffmpeg || echo /Applications/Vibe.app/Contents/MacOS/ffmpeg)
+WHISPER=$(command -v whisper-cli) || { echo "whisper-cli missing: brew install whisper-cpp" >&2; exit 1; }
+[ -x "$FFMPEG" ] || { echo "ffmpeg missing: brew install ffmpeg" >&2; exit 1; }
+[ -f "$MODEL" ] || { echo "model missing: $MODEL (set FR_WHISPER_MODEL; see README)" >&2; exit 1; }
+[ -f "${1:-}" ] || { sed -n 2,15p "$0"; exit 1; }
+
+WAV=$(mktemp -t voice).wav
+trap 'rm -f "$WAV" "${WAV%.wav}"' EXIT
+# whisper.cpp wants 16 kHz mono PCM; browsers record WebM/Opus.
+"$FFMPEG" -loglevel error -y -i "$1" -ar 16000 -ac 1 -c:a pcm_s16le "$WAV"
+DICT="$HERE/dictation"
+PROMPT=$(python3 -I "$DICT" prompt ${WHISPER_EXTRA:+--extra "$WHISPER_EXTRA"} 2>/dev/null || true)
+"$WHISPER" -m "$MODEL" -l "${WHISPER_LANG:-auto}" -nt -np ${PROMPT:+--prompt "$PROMPT"} -f "$WAV" 2>/dev/null \
+	| sed 's/^ *//' | grep -v '^$' | python3 -I "$DICT" fix

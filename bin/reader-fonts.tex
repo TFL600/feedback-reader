@@ -1,0 +1,15 @@
+% Fallback fonts for the reader PDFs (email-to-reader, md-to-reader). Helvetica Neue has no arrows,
+% maths operators or symbols, so xelatex silently drops them.
+% ucharclasses switches those Unicode blocks to Arial Unicode MS (ships with macOS). Emoji are still missing.
+\newfontfamily\fallbackfont{Arial Unicode MS}
+\usepackage[Arrows,MathematicalOperators,MiscellaneousTechnical,MiscellaneousSymbols,Dingbats,GeometricShapes,SupplementalArrowsA,SupplementalArrowsB,LetterlikeSymbols,NumberForms]{ucharclasses}
+\setTransitionsFor{Arrows}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{MathematicalOperators}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{MiscellaneousTechnical}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{MiscellaneousSymbols}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{Dingbats}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{GeometricShapes}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{SupplementalArrowsA}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{SupplementalArrowsB}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{LetterlikeSymbols}{\begingroup\fallbackfont}{\endgroup}
+\setTransitionsFor{NumberForms}{\begingroup\fallbackfont}{\endgroup}

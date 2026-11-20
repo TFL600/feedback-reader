@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Render any markdown draft to PDF and open it in the click-to-dictate feedback reader, so it
+# can be reviewed by voice. Emails have their own wrapper, email-to-reader (one email per page).
+#
+#   md-to-reader <draft.md> [more.md ...]   # several files become one PDF, one file per page
+#
+# The PDF goes to $FR_DRAFTS (default ~/.feedback-reader/drafts)/<name>-<timestamp>.pdf.
+# Needs pandoc and xelatex. FR_FONT sets the main font (default Helvetica Neue).
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/_config.sh"
+[ $# -ge 1 ] || { echo "usage: md-to-reader <draft.md> [more.md ...]" >&2; exit 1; }
+for f in "$@"; do [ -f "$f" ] || { echo "no such file: $f" >&2; exit 1; }; done
+OUT_DIR="${FR_DRAFTS:-${FR_HOME:-$HOME/.feedback-reader}/drafts}"; mkdir -p "$OUT_DIR"
+NAME="$(basename "${1%.*}" | tr ' ' '-')"; [ $# -gt 1 ] && NAME="$NAME-and-$(($# - 1))-more"
+PDF="$OUT_DIR/$NAME-$(date +%Y-%m-%d-%H%M%S).pdf"
+# Drop YAML front matter and Obsidian-only syntax (%%comments%%, [[wikilinks]] -> text), join
+# files with page breaks.
+python3 -I - "$@" <<'PY' |
+import re, sys
+out = []
+for i, f in enumerate(sys.argv[1:]):
+    t = open(f).read()
+    t = re.sub(r"\A---\n.*?\n---\n", "", t, flags=re.S)
+    t = re.sub(r"%%.*?%%", "", t, flags=re.S)
+    t = re.sub(r"\[\[([^\]|]+\|)?([^\]]+)\]\]", r"\2", t)
+    t = re.sub(r"(?m)^```dataviewjs.*?^```", "", t, flags=re.S)
+    # Pandoc needs a blank line before a list that follows a paragraph line (Obsidian doesn't).
+    t = re.sub(r"(?m)^((?![ \t]*([-*+]|\d+\.)[ \t]).+)\n(?=[ \t]*([-*+]|\d+\.)[ \t])", r"\1\n\n", t)
+    if i: out.append(r"\newpage")
+    out.append(t)
+print("\n\n".join(out))
+PY
+	pandoc -f markdown+hard_line_breaks-yaml_metadata_block -o "$PDF" --pdf-engine=xelatex \
+		-V geometry:margin=2.3cm -V fontsize=11pt -V mainfont="${FR_FONT:-Helvetica Neue}" -H "$(dirname "$(readlink -f "$0")")/reader-fonts.tex" \
+		-V linestretch=1.25 -V pagestyle=empty -V colorlinks=true \
+		-V 'header-includes=\usepackage[none]{hyphenat}\frenchspacing\raggedright'
+# No hyphenation and ragged right, so the text the reader extracts under a click matches the draft.
+# Sidecar naming the source files, so a feedback round can be applied to the markdown itself.
+for f in "$@"; do python3 -c 'import os,sys;print(os.path.abspath(sys.argv[1]))' "$f"; done > "$PDF.sources"
+"$(dirname "$(readlink -f "$0")")/open-reader" "$PDF" >/dev/null
+echo "$PDF"
