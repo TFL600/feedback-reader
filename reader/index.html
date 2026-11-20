@@ -185,11 +185,33 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
 // A tab opened from the queue (?open=<path>) always gets a fresh id: Chrome copies sessionStorage into
 // tabs opened with window.open, and reusing the opener's id would move the opener to the new PDF.
 const OPEN_ON_LOAD = new URLSearchParams(location.search).get("open");
-const TAB = (location.hash.match(/t=([A-Za-z0-9_-]+)/) || [])[1] || (OPEN_ON_LOAD ? null : (() => { try { return sessionStorage.getItem("fr-tab"); } catch (e) { return null; } })()) || ("t" + Math.random().toString(36).slice(2, 10));
+let TAB = (location.hash.match(/t=([A-Za-z0-9_-]+)/) || [])[1] || (OPEN_ON_LOAD ? null : (() => { try { return sessionStorage.getItem("fr-tab"); } catch (e) { return null; } })()) || ("t" + Math.random().toString(36).slice(2, 10));
 try { sessionStorage.setItem("fr-tab", TAB); } catch (e) {}
 const START_ON_RECENT = !new URLSearchParams(location.search).has("doc") && !OPEN_ON_LOAD && !/t=/.test(location.hash);
 history.replaceState(null, "", location.pathname + "#t=" + TAB);
 const U = path => path + (path.includes("?") ? "&" : "?") + "tab=" + TAB;
+// Two browser tabs with one id would share one server tab, so opening a PDF in either swapped both
+// (a duplicated tab, a restored session, or open-reader opening a tab it could not find). On load,
+// each tab says hello on a BroadcastChannel; an older tab with the same id answers, and the newer
+// one takes a fresh id and keeps showing the same PDF in a round of its own.
+const BORN = performance.timeOrigin;
+let DUP_OF = null;
+const tabSettled = new Promise(res => {
+	let bc;
+	try { bc = new BroadcastChannel("fr-tabs"); } catch (e) { return res(); }
+	bc.onmessage = e => {
+		const m = e.data || {};
+		if (m.hello === TAB && m.born > BORN) bc.postMessage({ taken: TAB, to: m.born });
+		if (m.taken === TAB && m.to === BORN && !DUP_OF) {
+			DUP_OF = TAB;
+			TAB = "t" + Math.random().toString(36).slice(2, 10);
+			try { sessionStorage.setItem("fr-tab", TAB); } catch (e) {}
+			history.replaceState(null, "", location.pathname + "#t=" + TAB);
+		}
+	};
+	bc.postMessage({ hello: TAB, born: BORN });
+	setTimeout(res, 200);
+});
 async function api(path, body, raw) {
 	const r = await fetch(U(path), { method: body === undefined ? "GET" : "POST", body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)) });
 	const j = await r.json().catch(() => ({}));
@@ -978,6 +1000,13 @@ updateMicUi();
 // (#t=<id>, also a reload) already has it on the server and goes straight to it. A plain visit shows
 // the review queue first.
 (async () => {
+	await tabSettled;
+	if (DUP_OF && !OPEN_ON_LOAD) {
+		try {
+			const r = await fetch("/api/state?tab=" + DUP_OF + "&busy=0"); const st = await r.json();
+			if (st.pdf_path) await api("/api/open", { path: st.pdf_path });
+		} catch (e) {}
+	}
 	if (OPEN_ON_LOAD) { try { await api("/api/open", { path: OPEN_ON_LOAD }); } catch (e) { toast(e.message, true); } }
 	await loadPdf();
 	if (START_ON_RECENT && S.pdf) showOpen();   // no Start overlay: opens straight on the page, mic off until turned on
