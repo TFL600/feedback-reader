@@ -386,20 +386,22 @@ async function poll() {
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 window.addEventListener("pagehide", () => navigator.sendBeacon(U("/api/bye"), ""));
 
-// ---------- zoom: keeps the spot you look at (or the pointer, for a pinch) where it is ----------
+// ---------- zoom: keeps the line you look at (or under the pointer, for a pinch) at the same height ----------
+// Sideways it always snaps back to the page's left edge, so zooming in only grows the page to the right
+// (scroll right by hand to see more). A page narrower than the window stays centred.
 function zoomTo(scale, cx, cy) {
 	if (!S.pdf) return;
 	scale = Math.max(0.3, Math.min(4, scale));
 	if (Math.abs(scale - S.scale) < 1e-3) return;
-	cx = cx ?? window.innerWidth / 2; cy = cy ?? window.innerHeight / 2;
-	// The page under the anchor point, and where in it (as a fraction) the anchor sits.
+	cy = cy ?? window.innerHeight / 2;
+	// The page under the anchor point, and how far down it (as a fraction) the anchor sits.
 	const p = S.pages.find(p => { const r = p.el.getBoundingClientRect(); return cy >= r.top - 9 && cy <= r.bottom + 9; }) || S.pages[0];
-	const r = p.el.getBoundingClientRect(), fx = (cx - r.left) / r.width, fy = (cy - r.top) / r.height;
+	const r = p.el.getBoundingClientRect(), fy = (cy - r.top) / r.height;
 	S.scale = scale;
 	render();
 	const r2 = p.el.getBoundingClientRect();
 	window.scrollBy(0, r2.top + fy * r2.height - cy);
-	$("#pages").scrollLeft += r2.left + fx * r2.width - cx;  // wide pages scroll sideways inside #pages
+	$("#pages").scrollLeft = 0; $("#hbar").scrollLeft = 0;  // wide pages scroll sideways inside #pages
 }
 async function zoom(f, cx, cy) { await finish({ force: true }); zoomTo(S.scale * f, cx, cy); }
 async function zoomFit() { await finish({ force: true }); if (S.pdf) zoomTo(fitScale()); }
