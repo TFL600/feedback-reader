@@ -42,6 +42,19 @@ def latest_session():
     return s[-1]
 
 
+# What Whisper makes of silence or keyboard noise. A clip recorded while typing is only key clicks,
+# so a typed note whose transcript is nothing but these phrases gets no Said line.
+SILENCE = {"thank you", "thanks", "thank you very much", "thank you for watching", "thanks for watching",
+           "all right", "alright", "right", "okay", "ok", "i'm going to go", "bye", "goodbye", "you",
+           "so", "um", "uh", "hmm", "mm", "oh", "yeah", "s", "blank_audio", "silence", "music"}
+
+
+def is_silence(text: str) -> bool:
+    """True if every sentence of the transcript is a known silence phrase (or there is none)."""
+    parts = (re.sub(r"[^\w' ]", "", p).strip().lower() for p in re.split(r"[.!?,()\[\]]+", (text or "").replace("’", "'")))
+    return all(p in SILENCE for p in parts if p)
+
+
 def transcribe(audio: Path, glossary: Path | None = None) -> str:
     env = dict(os.environ, WHISPER_LANG=os.environ.get("WHISPER_LANG", "en"))
     gl = glossary or GLOSSARY
@@ -191,7 +204,7 @@ def process(sess: Path) -> int:
             tag = " (added)" if j else ""
             if m.get("typed"):
                 out.append(f"Typed{tag}: {m['typed']}")
-            if m.get("transcript"):
+            if m.get("transcript") and not (m.get("typed") and is_silence(m["transcript"])):
                 out.append(f"Said{tag}: {m['transcript']}")
         out.append("")
     (sess / "feedback.md").write_text("\n".join(out))
