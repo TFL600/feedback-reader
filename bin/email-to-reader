@@ -16,7 +16,33 @@ OUT_DIR="${FR_EMAIL_DRAFTS:-${FR_DRAFTS:-${FR_HOME:-$HOME/.feedback-reader}/draf
 
 [ -f "$MD" ] || { echo "no draft file: $MD" >&2; exit 1; }
 mkdir -p "$OUT_DIR"
-PDF="$OUT_DIR/email-drafts-$(date +%Y-%m-%d-%H%M%S).pdf"
+# Name the PDF after the first email's recipient and topic (its "**To:** X | **Re:** Y" line, else
+# the greeting and the Subject: line), so tabs and the review queue tell drafts apart:
+# alex-meeting-next-week-2026-11-24-170812.pdf. "+2" after the name = two more emails in the file.
+NAME=$(python3 -I - "$MD" <<'PY'
+import re, sys, unicodedata
+text = open(sys.argv[1]).read()
+parts = [p for p in re.split(r"(?m)^---[ \t]*$", text) if p.strip()]
+first = parts[0] if parts else ""
+def grab(*pats):
+    for pat in pats:
+        m = re.search(pat, first)
+        if m:
+            return m.group(1).strip()
+    return ""
+to = grab(r"\*\*To:\*\*\s*([^(|\n]+)", r"(?m)^(?:Hi|Dear)\s+([^,\n]+),")
+topic = grab(r"\*\*Re:\*\*\s*([^|\n]+)", r"(?m)^\**Subject:\**\s*(.+)$")
+def slug(s, n):
+    s = unicodedata.normalize("NFKD", re.sub(r"['’]", "", s)).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:n].rsplit("-", 1)[0] if len(s) > n else s
+to, topic = slug(to, 20), slug(topic, 40)
+if to and len(parts) > 1:
+    to += f"+{len(parts) - 1}"
+print("-".join(x for x in (to, topic) if x) or "email-drafts")
+PY
+)
+PDF="$OUT_DIR/$NAME-$(date +%Y-%m-%d-%H%M%S).pdf"
 
 # One email per page (drafts are separated by --- lines, which pandoc would otherwise read as a
 # rule, or YAML at the top). Each page gets "Email k of N" at the top and, unless it is the last,
