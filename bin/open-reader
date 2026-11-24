@@ -21,13 +21,24 @@ URL="http://127.0.0.1:$PORT/"
 READER="$(cd "$HERE/../reader" && pwd)/server.py"
 LOG="${FR_LOG:-${FR_HOME:-$HOME/.feedback-reader}/reader.log}"
 
-if ! curl -s -m 2 "127.0.0.1:$PORT/api/queue" >/dev/null; then
-	mkdir -p "$(dirname "$LOG")"
-	nohup python3 "$READER" --no-browser --port "$PORT" >"$LOG" 2>&1 &
-	for _ in $(seq 20); do
-		curl -s -m 1 "127.0.0.1:$PORT/api/queue" >/dev/null && break
-		sleep 0.3
-	done
+answers() { curl -s -m "$1" "127.0.0.1:$PORT/api/queue" >/dev/null; }
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
+
+if ! answers 2; then
+	if listening; then
+		# A reader holds the port but is slow (busy, or still starting): wait for it, never start a
+		# second one (it would only die with "address in use").
+		for _ in $(seq 6); do answers 5 && break; done
+	else
+		mkdir -p "$(dirname "$LOG")"
+		# Append: the log must survive restarts, it is the only trace of a crash.
+		nohup python3 "$READER" --no-browser --port "$PORT" >>"$LOG" 2>&1 &
+		for _ in $(seq 20); do
+			answers 1 && break
+			sleep 0.3
+		done
+	fi
+	answers 5 || { echo "the reader on port $PORT is not answering, see $LOG" >&2; exit 1; }
 fi
 
 TAB=$(python3 -c 'import json,sys; print(json.dumps({"path": sys.argv[1]}))' "$PDF" |

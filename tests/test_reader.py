@@ -123,6 +123,27 @@ class ProcessTest(unittest.TestCase):
         for t in ("NequIP", "CsPbI3", "DFT", "Huang-Rhys"):
             self.assertIn(t, terms)
 
+    def test_silence_phrases(self):
+        for t in ("Thank you.", "All right.", "I’m going to go.", "Thank you. Thank you.", "[BLANK_AUDIO]", ""):
+            self.assertTrue(process.is_silence(t), t)
+        for t in ("Cut this sentence.", "All right, cut this.", "Okay. Move the figure up."):
+            self.assertFalse(process.is_silence(t), t)
+
+    def test_typing_noise_gets_no_said_line(self):
+        sess = TMP / "silence-round"
+        sess.mkdir()
+        (sess / "session.json").write_text(json.dumps({"pdf": str(make_pdf(TMP / "silence" / "d.pdf"))}))
+        notes = [{"id": "n1", "kind": "general", "typed": "Cut the second paragraph.", "transcript": "All right."},
+                 {"id": "n2", "kind": "general", "typed": "Typed too.", "transcript": "Move it up."},
+                 {"id": "n3", "kind": "general", "transcript": "Thank you."}]
+        (sess / "notes.json").write_text(json.dumps(notes))
+        process.process(sess)
+        md = (sess / "feedback.md").read_text()
+        self.assertIn("Typed: Cut the second paragraph.", md)
+        self.assertNotIn("Said: All right.", md)
+        self.assertIn("Said: Move it up.", md)
+        self.assertIn("Said: Thank you.", md)  # nothing typed: the transcript is all there is
+
 
 class DictationTest(unittest.TestCase):
     def run_dictation(self, *args, stdin=""):
@@ -206,6 +227,24 @@ class ServerTest(unittest.TestCase):
         self.assertIn("Typed: Cut this.", md)
         self.assertIn("Clicked: “A sentence worth cutting.” (word: cutting)", md)
         self.assertIn("## 2 · general", md)
+
+    def test_a_second_server_exits_cleanly(self):
+        env = {**os.environ, "FR_HOME": str(self.home)}
+        r = subprocess.run([sys.executable, str(ROOT / "reader" / "server.py"), "--no-browser", "--port", str(self.port)],
+                           env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("already in use", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("--- start ", r.stdout)
+
+    def test_open_reader_reuses_a_running_server(self):
+        log = self.home / "reader.log"
+        log.write_text("earlier run\n")
+        env = {**os.environ, "FR_HOME": str(self.home), "FR_PORT": str(self.port), "FR_LOG": str(log), "FR_NO_BROWSER": "1"}
+        pdf = make_pdf(TMP / "open" / "o.pdf")
+        r = subprocess.run([str(ROOT / "bin" / "open-reader"), str(pdf)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(log.read_text(), "earlier run\n", "a running reader must not be restarted or its log cut")
 
     def test_bad_ids_are_refused(self):
         pdf = make_pdf(TMP / "bad" / "x.pdf")

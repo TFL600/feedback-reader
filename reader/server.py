@@ -30,6 +30,7 @@ rounds.
 Stdlib only. Binds to 127.0.0.1, so nothing is reachable from the network.
 """
 import argparse
+import errno
 import json
 import os
 import re
@@ -649,7 +650,17 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
+    # open-reader appends to one log across restarts: stamp each start so a crash stays traceable.
+    print(f"--- start {datetime.now():%Y-%m-%d %H:%M:%S} pid {os.getpid()} port {a.port}", flush=True)
     tabs = Tabs()
+    worker = Worker()
+    # Bind before touching any round: a second copy must not resume rounds the first one owns.
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(tabs, worker))
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            sys.exit(f"port {a.port} is already in use (another reader running?), not starting a second one")
+        raise
     first = None
     if a.pdf:
         pdf = a.pdf.resolve()
@@ -660,13 +671,11 @@ def main():
         tabs.default = pdf  # the first tab to connect shows it
         remember(pdf)
     tidy([first.dir] if first else [])
-    worker = Worker()
     # Clips saved before a restart that never got a transcript, and rounds left half-processed.
     for meta in FEEDBACK.glob("*/*-*/session.json"):
         d = meta.parent
         if (d / "PROCESSING").exists():
             worker.round(d)
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(tabs, worker))
     url = f"http://127.0.0.1:{a.port}/"
     where = first.dir if first else "no PDF yet"
     print(f"session {where}  ->  {url}  (Ctrl-C to stop)", flush=True)
