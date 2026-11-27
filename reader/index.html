@@ -923,7 +923,7 @@ async function finishRound() {
 	let copied = false;
 	try { await navigator.clipboard.writeText(r.command); copied = true; } catch (e) {}
 	modal((body, button) => {
-		body.innerHTML = `<h2>Round saved</h2><p>${r.kept} notes. ${copied ? "The command is on your clipboard" : "Copy this command"}: paste it into Claude Code (${r.where || "in any Claude Code session"}) and press Enter. <b>Copy and open Claude</b> does both steps but the paste.</p>`;
+		body.innerHTML = `<h2>Round saved</h2><p>${r.kept} notes. ${copied ? "The command is on your clipboard" : "Copy this command"}: paste it into Claude Code (${r.where || "in any Claude Code session"}) and press Enter. <b>Copy and open Claude</b> copies it and switches to the Claude app, so you only paste.</p>`;
 		const c = document.createElement("code"); c.textContent = r.command; body.appendChild(c);
 		const q = document.createElement("p"); q.className = "muted";
 		q.textContent = (r.left ? `${r.left} clip${r.left === 1 ? " is" : "s are"} still being transcribed in the background. Paste now anyway: Claude waits for it. ` : "Everything is transcribed. ")
