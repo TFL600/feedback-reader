@@ -90,9 +90,6 @@ kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-b
 .item .sub{margin:4px 0 0 18px;padding-left:8px;border-left:2px solid var(--line);font-size:12px}
 #selbar{display:flex;gap:6px;align-items:center;margin-bottom:6px}
 #selbar button{padding:1px 8px;font-size:12px}
-#modes{display:inline-flex}#modes button{border-radius:0}#modes button:first-child{border-radius:6px 0 0 6px}#modes button:last-child{border-radius:0 6px 6px 0;margin-left:-1px}
-#modes button:disabled{opacity:.45;cursor:default}
-#hint{display:none;margin:0 0 8px;padding:6px 8px;border-radius:6px;background:#2a9d8f22;font-size:12px}body.review #hint{display:block}
 button.danger{border-color:var(--rec);color:var(--rec)}
 button.danger.on,button.danger:hover{background:var(--rec);color:#fff}
 #modal .add{margin:10px 0 0;padding-left:10px;border-left:2px solid var(--line)}
@@ -137,7 +134,7 @@ body.dragging #dropzone{display:flex}
 </head>
 <body>
 <header>
-	<div class="l"><b>Feedback</b><button id="openBtn" title="Open another PDF">Open</button><button id="helpBtn" title="Keyboard shortcuts and how saving works">Shortcuts</button><span id="modes"><button data-m="write" title="Make notes on the document">Write</button><button data-m="review" title="Claude's changes from the last round: red struck out, blue new">Review changes</button></span><span id="docname" class="muted"></span></div>
+	<div class="l"><b>Feedback</b><button id="openBtn" title="Open another PDF">Open</button><button id="helpBtn" title="Keyboard shortcuts and how saving works">Shortcuts</button><span id="docname" class="muted"></span></div>
 	<div id="mic" class="off" title="Microphone level. Click to choose the input device.">
 		<canvas id="meter" width="96" height="18"></canvas>
 		<span class="dev">mic off</span>
@@ -155,7 +152,6 @@ body.dragging #dropzone{display:flex}
 <div id="layout">
 	<div id="pages"></div>
 	<aside id="side"><h3><span id="count">0</span> notes · <span id="sess" class="muted"></span></h3>
-		<div id="hint">Review: a change with no note is accepted. Pin a change to reject it (“reject”) or say how to redo it, then Finish round.</div>
 		<div id="selbar"><button id="selAll">Select all</button><button id="selDel" class="danger" hidden>Delete selected</button><button id="selClear" hidden>Clear</button></div>
 		<div id="list"></div></aside>
 </div>
@@ -231,7 +227,6 @@ const ACTIONS = {
 	zoomFit: { label: "Fit to width (also Cmd 0)", def: "0", run: () => zoomFit() },
 	reload: { label: "Reload the PDF (rarely needed: it reloads itself after a rebuild)", def: "r", run: () => reloadPdf() },
 	finish: { label: "Finish round (transcribe, hand to Claude)", def: "F", run: () => finishRound() },
-	mode: { label: "Switch Write / Review changes", def: "v", run: () => switchMode() },
 	help: { label: "This menu", def: "?", run: () => showHelp() },
 };
 let KEYS = Object.assign(Object.fromEntries(Object.entries(ACTIONS).map(([k, a]) => [k, a.def])), store.get("fr-keys", {}));
@@ -269,7 +264,7 @@ function updateMicUi() {
 // Tab title: document first, like Google Docs or Overleaf, so narrow tabs still tell PDFs apart; the
 // mic icon says it is the reader. "(3)" = notes in this round, "●" = recording now.
 const GENERIC = /^(main|review|index|draft|document|output|thesis|paper|manuscript|report|out)$/i;
-const SKIP_DIR = /^(_.*|build|out|output|dist|workflow|review|pdfs?|tmp|feedback)$/i;
+const SKIP_DIR = /^(_.*|build|out|output|dist|workflow|pdfs?|tmp|feedback)$/i;
 function shortName(path) {
 	const parts = (path || "").split("/"), stem = parts.pop().replace(/\.pdf$/i, "");
 	if (!GENERIC.test(stem)) return stem;
@@ -334,10 +329,6 @@ async function loadPdf() {
 	$("#sess").textContent = st.session;
 	S.notes = st.notes; S.sel.clear();
 	S.pdfPath = st.pdf_path; S.sig = sigOf(st); S.pendingSig = null;
-	S.mode = st.mode; S.pair = st.pair;
-	document.body.classList.toggle("review", st.mode === "review");
-	document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === st.mode); b.disabled = b.dataset.m !== st.mode && !st.pair; });
-	document.querySelector('#modes [data-m="review"]').title = st.mode === "review" || st.pair ? "Claude's changes from the last round: red struck out, blue new" : "No changes to review yet: they appear after Claude applies a round";
 	S.pdf = await pdfjsLib.getDocument({ url: U("/doc.pdf?t=" + Date.now()) }).promise;
 	S.pages = [];
 	for (let i = 1; i <= S.pdf.numPages; i++) S.pages.push({ num: i, page: await S.pdf.getPage(i), text: null });
@@ -349,10 +340,8 @@ async function loadPdf() {
 // Fit page + gutter into the space left of the sidebar. 0.3: wide pages (photo-book spreads) must fit.
 function fitScale() { const w = $("#pages").clientWidth - 40, pw = S.pages[0].page.view[2]; return Math.max(0.3, Math.min(1.6, (w - GUTTER) / pw)); }
 async function reloadPdf() { await finish({ force: true }); await loadPdf(); }
-function switchMode(m) { if ((m && m === S.mode) || !S.pair) return; openPath(S.pair); }
-document.querySelectorAll("#modes button").forEach(b => b.onclick = () => switchMode(b.dataset.m));
 
-// The PDF reloads itself when it is rebuilt (latexmk) or when Claude opens another one (a review PDF).
+// The PDF reloads itself when it is rebuilt (latexmk) or when Claude opens another one in this tab.
 // It waits until the file has stopped changing for one poll, and never while a note is open.
 function sigOf(st) { return st.pdf ? `${st.pdf_path}|${st.pdf_mtime}` : "none"; }
 async function poll() {
@@ -483,9 +472,9 @@ async function fillRecent(box) {
 	}
 }
 // A tab whose round already has notes keeps them on screen: another PDF opens in a new tab beside it.
-// The same PDF (or its review PDF) stays here.
+// The same PDF stays here.
 async function openPath(p) {
-	if (S.pdfPath && roots().length && p !== S.pdfPath && p !== S.pair) {
+	if (S.pdfPath && roots().length && p !== S.pdfPath) {
 		closeModal();
 		if (!window.open("/?open=" + encodeURIComponent(p), "_blank")) toast("Chrome blocked the new tab: allow pop-ups for the reader, or finish this round first", true);
 		return;
@@ -916,7 +905,7 @@ $("#selDel").onclick = () => { const ids = [...S.sel]; confirmBox(`Delete ${ids.
 async function finishRound() {
 	if (await finish() === false) return;
 	S.micOn = false; stopMic(); updateMicUi();   // nothing more to record once the round is finished: mic off until turned on again
-	if (!roots().length) return toast("No notes yet. For a review PDF that means every change is accepted: nothing to send.");
+	if (!roots().length) return toast("No notes yet: nothing to send.");
 	let r;
 	try { r = await api("/api/finish", {}); }
 	catch (e) { modal(body => body.textContent = "Finishing failed: " + e.message + "\nYour notes are saved. Try again, or run process.py."); return; }
@@ -950,14 +939,13 @@ function showHelp() {
 			<li><b>Discard</b> the note you are making: Esc or Discard. A click under a second with nothing typed is ignored.</li>
 			<li><b>Add</b> something you forgot: <b>+ 🎙</b> (spoken) or <b>+ ⌨</b> (typed or pasted) in the list, or open the note (its number in the margin). It is kept with the note.</li>
 			<li><b>Delete</b> a saved note: open it, then Delete. <b>Several</b>: tick them in the list, then Delete selected (Select all ticks every one).</li>
-			<li><b>Write / Review changes</b> (top left): after Claude applies a round, Review shows its changes (red struck out, blue new). No note on a change accepts it.</li>
 			<li><b>Play back</b>: ▶ Play in the list, or open the note.</li>
 			<li><b>Finish round</b> copies a command (<code>/apply-feedback …</code> by default) for you to paste into Claude Code, at once. Clips are transcribed in the background as you go; Claude waits for any that are left.</li>
 			<li><b>Mic off</b>: the amber pill in the middle says so. <b>⌨ General</b> and <b>+ ⌨</b> never record, whatever the mic does (for pasting). In a recording note, <b>🔇 Text only</b> drops the recording. A note with nothing typed and nothing heard is not saved: it shakes and waits.</li>
 			<li><b>Find</b>: Cmd+F (the browser's own search) works on the PDF text. <b>Zoom</b>: pinch, Cmd + / Cmd −, or the buttons; the % button (or Cmd 0) fits the width.</li>
 			<li><b>Tabs</b>: each tab is its own document and round. Opening another PDF from a tab with notes opens a new tab, so nothing is hidden.</li>
 			<li><b>Mic check</b>: the bars in the top bar move when the mic hears you. Click them to pick another input. A note silent for 3 s turns red. After ${SLEEP_MIN} idle minutes the mic is released (no orange dot); the next note wakes it.</li>
-			<li>The PDF <b>reloads itself</b> when it is rebuilt, or when Claude opens a review PDF of its changes.</li></ul>`;
+			<li>The PDF <b>reloads itself</b> when it is rebuilt.</li></ul>`;
 		const t = body.querySelector("#keys");
 		for (const [k, a] of Object.entries(ACTIONS)) {
 			const tr = document.createElement("tr");

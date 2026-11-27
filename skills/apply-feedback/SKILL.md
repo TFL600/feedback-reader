@@ -23,10 +23,6 @@ into edits. It reads text only: `feedback.md` is a few thousand tokens per round
    - **Markdown drafts** made by `md-to-reader`: `<pdf>.sources` lists the markdown files. Edit them
      at the clicked text (grep a distinctive fragment), then rerun `md-to-reader` for another round.
    - **Email drafts** (PDF in a folder named `email-drafts`): `p<N>` is the Nth email in the source file.
-   - **A review PDF** (`review-*.pdf`, made by `reader/review.py`): every note is a verdict on a change.
-     "Reject", "undo", "keep the old one" restore the red struck-out text. Anything else is a new
-     instruction. A change with no note is accepted. Find the real source line by grepping the blue
-     (new) text.
    - **A scripted test round** on `tests/targets.tex`: run `tests/eval.py` and report its score
      instead of editing anything.
    - **Anything else** (a Word export, a co-author's PDF, no source): group notes by page and clicked
@@ -51,9 +47,6 @@ into edits. It reads text only: `feedback.md` is a few thousand tokens per round
 8. **Dictionary.** For each term Whisper got wrong, run
    `$FR_READER/bin/dictation add-fix "<heard>" "<meant>"`, and `dictation add-term "<term>"` for new
    technical terms. List them in the report.
-9. **Close.** `touch <round dir>/PROCESSED`. For LaTeX: rebuild with `latexmk -synctex=1`, commit, and
-   show the changes as a red/blue PDF with `python3 $FR_READER/reader/review.py <main.tex> --rev <commit
-   before this round>`, which switches the open reader to it.
-10. **Report in one line:** notes applied per kind, questions asked, dictionary entries added, and
-    "changes are open in the reader: no note = accept, pin a change to reject or revise, then Finish
-    round".
+9. **Close.** `touch <round dir>/PROCESSED`. For LaTeX: rebuild with `latexmk -synctex=1` (the open
+   reader reloads the PDF itself) and commit.
+10. **Report in one line:** notes applied per kind, questions asked and dictionary entries added.

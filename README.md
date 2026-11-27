@@ -35,13 +35,8 @@ a reply belongs to.
 5. **An agent applies your spoken feedback.** *Finish round* copies a command such as
    `/apply-feedback <round>` to the clipboard. Pasted into [Claude Code](https://claude.com/claude-code),
    the agent reads a compact `feedback.md` (a few thousand tokens for 30 notes, never audio), makes
-   the edits, asks only about the ambiguous ones and logs every before/after pair.
-6. **Review the changes, and give feedback on them.** `reader/review.py` builds a red/blue PDF of
-   what the agent changed and switches the reader to it. No note on a change accepts it. A note on
-   it ("keep the original wording", or a new instruction) goes into the next round, so the loop
-   continues until the draft is right.
-
-![Review mode: the agent's changes in red and blue, with two spoken notes on them](docs/reader-review.png)
+   the edits, asks only about the ambiguous ones and logs every before/after pair. A rebuilt PDF
+   reloads in the reader by itself, ready for the next round.
 
 It also works on PDFs that are not LaTeX (a Word export, a co-author's draft, an AI answer): notes
 still carry the clicked text, so the agent can find the passage.
@@ -82,7 +77,7 @@ To let Claude Code apply your rounds, run `./install.sh`. It shows what it will 
 Settings are optional. Put them in `~/.feedback-reader/config.env` as `KEY=value` lines, or set
 them as environment variables (full list in [reader/config.py](reader/config.py)). Personal settings
 stay outside the repo.
-The ones worth knowing: `FR_PROJECT` (a LaTeX project whose PDFs get source lines and review diffs),
+The ones worth knowing: `FR_PROJECT` (a LaTeX project whose PDFs get source lines),
 `FR_HOME` (where rounds are kept, default `~/.feedback-reader`), `FR_WHISPER_MODEL` and
 `FR_DICTIONARY` (see [dictionary.example.md](dictionary.example.md)).
 
@@ -94,7 +89,6 @@ The ones worth knowing: `FR_PROJECT` (a LaTeX project whose PDFs get source line
 | `reader/index.html` | the whole front end, one file, PDF.js from a CDN |
 | `reader/process.py` | finishes a round: transcripts, source lines, `feedback.md` |
 | `reader/glossary.py` | jargon from the project's `.tex` files (or any PDF) to prompt Whisper with |
-| `reader/review.py` | red/blue latexdiff PDF of the agent's changes |
 | `bin/open-reader` | start the reader if needed and open a PDF in the right tab |
 | `bin/md-to-reader`, `bin/email-to-reader` | render markdown drafts (or one email per page) to PDF and open them |
 | `bin/whisper-transcribe` | headless whisper.cpp for one clip |

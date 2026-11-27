@@ -3,8 +3,8 @@
 #   open-reader <file.pdf>
 #   open-reader            # no PDF: the review queue
 # Starts the reader (reader/server.py) if it is not running, then asks it which tab to use
-# (POST /api/route): a tab already on this document (the same PDF, its review PDF or an earlier
-# render of the same draft), else a new one. Another document's tab is never taken over.
+# (POST /api/route): a tab already on this document (the same PDF or an earlier render
+# of the same draft), else a new one. Another document's tab is never taken over.
 # Each reader tab carries its id in the URL (#t=<id>). With Google Chrome on macOS this finds
 # that tab and brings it to the front; otherwise it opens the URL in the default browser
 # (FR_BROWSER names another macOS app to use). FR_NO_BROWSER=1 only starts and routes (tests).

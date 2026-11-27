@@ -4,8 +4,8 @@ That file holds KEY=value lines (# comments, ~ expanded). An environment variabl
 
     FR_HOME            where the reader keeps its own state           default ~/.feedback-reader
     FR_FEEDBACK        where feedback rounds are stored               default $FR_HOME/rounds
-    FR_PROJECT         root of a LaTeX project (a git repo) whose PDFs get source lines and
-                       review diffs. Optional: without it every PDF is an "other" document.
+    FR_PROJECT         root of a LaTeX project (a git repo) whose PDFs get source lines.
+                       Optional: without it every PDF is an "other" document.
     FR_PROJECT_GROUP   folder name for that project's rounds          default project
     FR_BUILD           where that project builds its PDFs             default $FR_PROJECT/build
     FR_SANDBOX         test documents (see tests/eval.py)             default $FR_PROJECT/sandbox

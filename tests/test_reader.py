@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TMP = Path(tempfile.mkdtemp(prefix="fr-test-")).resolve()  # macOS: /var is a symlink
 PROJECT = TMP / "project"
-(PROJECT / "build" / "review").mkdir(parents=True)
+(PROJECT / "build").mkdir(parents=True)
 (PROJECT / "sandbox").mkdir()
 CONFIG = TMP / "config.env"
 CONFIG.write_text(
@@ -96,12 +96,6 @@ class GroupsAndTabsTest(unittest.TestCase):
         self.assertTrue(server.same_draft(d / "letter-2026-11-20-101500.pdf", d / "letter-2026-11-20-113000.pdf"))
         self.assertFalse(server.same_draft(d / "letter-2026-11-20-101500.pdf", d / "cv-2026-11-20-101500.pdf"))
         self.assertFalse(server.same_draft(d / "letter.pdf", TMP / "other" / "letter.pdf"))
-
-    def test_mode_pair_links_a_build_to_its_review(self):
-        main = make_pdf(PROJECT / "build" / "main.pdf")
-        review = make_pdf(PROJECT / "build" / "review" / "review-main.pdf")
-        self.assertEqual(server.mode_pair(main), ("write", str(review)))
-        self.assertEqual(server.mode_pair(review), ("review", str(main)))
 
 
 class ProcessTest(unittest.TestCase):

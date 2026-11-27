@@ -64,8 +64,7 @@ def group_for(pdf: Path) -> str:
         return "email"
     if not in_project(p) or p.is_relative_to(FEEDBACK):
         return "other"
-    base = pdf.stem.removeprefix("review-")
-    return "sandbox" if SANDBOX and (SANDBOX / f"{base}.tex").exists() else PROJECT_GROUP
+    return "sandbox" if SANDBOX and (SANDBOX / f"{pdf.stem}.tex").exists() else PROJECT_GROUP
 
 
 def tidy(keep=()):
@@ -215,7 +214,7 @@ def recent_list():
     except (OSError, ValueError):
         paths = []
     out = [p for p in paths if Path(p).exists()]
-    builds = sorted(BUILD.glob("*.pdf")) + sorted((BUILD / "review").glob("*.pdf")) if BUILD else []
+    builds = sorted(BUILD.glob("*.pdf")) if BUILD else []
     for b in builds:
         if str(b) not in out:
             out.append(str(b))
@@ -253,7 +252,7 @@ def review_queue():
     out = []
     for p in paths:
         f = Path(p)
-        if not f.is_file() or (BUILD and f.parent == BUILD / "review") or "_pdfs" in f.parts:
+        if not f.is_file() or "_pdfs" in f.parts:
             continue
         rs = sorted(rounds.get(p, []), key=lambda r: r["last"])
         live = [r for r in rs if r["finished"] is None and r["notes"]]
@@ -410,8 +409,8 @@ class Tabs:
                     t["s"] = new
 
     def route(self, pdf: Path | None):
-        """Which tab open-reader should use: a tab already on this document (the same PDF, its review
-        PDF, or an earlier render of the same draft: md-to-reader stamps each render with the time),
+        """Which tab open-reader should use: a tab already on this document (the same PDF, or an
+        earlier render of the same draft: md-to-reader stamps each render with the time),
         else a new one. A tab on a different PDF is never taken over, notes or not: separate
         documents get separate tabs.
         Returns (tab id, whether it is new)."""
@@ -419,9 +418,8 @@ class Tabs:
         with self.lock:
             alive = sorted(((k, t) for k, t in self.tabs.items() if now - t["seen"] < ALIVE), key=lambda kt: -kt[1]["seen"])
         if pdf:
-            same = {str(pdf), str(mode_pair(pdf)[1])}
             for k, t in alive:
-                if t["s"] and str(t["s"].pdf) in same:
+                if t["s"] and t["s"].pdf == pdf:
                     return k, False
             for k, t in alive:
                 if t["s"] and not t["busy"] and not t["s"].load() and same_draft(t["s"].pdf, pdf):
@@ -437,18 +435,6 @@ def same_draft(a: Path, b: Path) -> bool:
     """Two renders of one draft: same folder, same name once the -YYYY-MM-DD-HHMMSS stamp is cut."""
     cut = lambda p: re.sub(r"-\d{4}-\d{2}-\d{2}-\d{6}$", "", p.stem)
     return a.parent == b.parent and cut(a) == cut(b)
-
-
-def mode_pair(pdf: Path):
-    """Write mode is the PDF itself; review mode is its red/blue diff from reader/review.py.
-    Returns (mode, path of the other one or None)."""
-    if not BUILD:
-        return ("review" if pdf.stem.startswith("review-") else "write"), None
-    if pdf.stem.startswith("review-"):
-        other = BUILD / f"{pdf.stem.removeprefix('review-')}.pdf"
-        return "review", (str(other) if other.exists() else None)
-    other = BUILD / "review" / f"review-{pdf.stem}.pdf"
-    return "write", (str(other) if pdf.parent == BUILD and other.exists() else None)
 
 
 def make_handler(tabs: Tabs, worker: Worker):
@@ -500,8 +486,6 @@ def make_handler(tabs: Tabs, worker: Worker):
                     "tab": tid,
                     "show_queue": show_queue,
                     "group": session.dir.parent.name,
-                    "mode": mode_pair(session.pdf)[0],
-                    "pair": mode_pair(session.pdf)[1],
                     "pdf_path": str(session.pdf),
                     "pdf_mtime": session.pdf.stat().st_mtime,
                     "session": session.dir.name,
