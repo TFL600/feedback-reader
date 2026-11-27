@@ -62,7 +62,12 @@ kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-b
 .dot.hl{opacity:1;box-shadow:0 0 0 4px #e76f5155}
 @keyframes pulse{50%{box-shadow:0 0 0 7px #d6282833}}
 .leader{position:absolute;height:0;border-top:1.5px dashed var(--rec);pointer-events:none;z-index:4}
-.badge{position:absolute;z-index:5;min-width:22px;height:20px;padding:0 6px;border-radius:10px;background:var(--done);color:#fff;font:600 11px/20px system-ui;text-align:center;cursor:pointer;box-shadow:0 1px 3px #0004}
+/* The margin number and its small buttons (add by voice, play, delete) sit in one row. */
+.pinbar{position:absolute;z-index:5;display:flex;gap:3px;align-items:center}
+.pinbar button{height:20px;min-width:22px;padding:0 4px;border-radius:10px;font-size:11px;line-height:18px;opacity:.7}
+.pinbar button:hover,.pinbar button.on{opacity:1}
+.pinbar button:disabled{opacity:.3;cursor:default;border-color:var(--line)}
+.badge{position:relative;min-width:22px;height:20px;padding:0 6px;border-radius:10px;background:var(--done);color:#fff;font:600 11px/20px system-ui;text-align:center;cursor:pointer;box-shadow:0 1px 3px #0004}
 .badge:hover{filter:brightness(1.1)}
 .badge::before{content:"";position:absolute;left:-7px;top:6px;border:4px solid transparent;border-right:4px solid var(--done)}
 .editor{position:absolute;z-index:10;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0004;padding:8px;cursor:default}
@@ -581,7 +586,7 @@ async function textAt(p, xbp, ybp) {
 // ---------- pins: a small dot on the text, the number in the margin ----------
 function newId() { return "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
 function drawPins() {
-	document.querySelectorAll(".dot:not(.live),.badge").forEach(e => e.remove());
+	document.querySelectorAll(".dot:not(.live),.pinbar").forEach(e => e.remove());
 	const lastY = {};
 	roots().forEach((n, i) => {
 		if (n.kind !== "anchored") return;
@@ -589,14 +594,36 @@ function drawPins() {
 		const x = n.x * S.scale, y = n.y * S.scale;
 		const d = document.createElement("div"); d.className = "dot"; d.dataset.id = n.id; d.style.left = x + "px"; d.style.top = y + "px"; p.el.appendChild(d);
 		let by = y - 10; if (lastY[n.page] !== undefined && by < lastY[n.page] + 22) by = lastY[n.page] + 22; lastY[n.page] = by;
+		const bar = document.createElement("div"); bar.className = "pinbar"; bar.style.left = (p.vp.width + 10) + "px"; bar.style.top = by + "px";
 		const b = document.createElement("div"); b.className = "badge"; b.dataset.id = n.id; b.textContent = i + 1;
-		b.style.left = (p.vp.width + 10) + "px"; b.style.top = by + "px";
 		b.title = (n.source ? `${n.source.file}:${n.source.line}\n` : "") + [n, ...adds(n)].map(m => m.transcript || m.typed || (m.audio ? "(audio)" : "")).join("\n+ ");
 		if (adds(n).length) b.textContent += "+";
-		b.onmouseenter = () => d.classList.add("hl"); b.onmouseleave = () => d.classList.remove("hl");
+		bar.onmouseenter = () => d.classList.add("hl"); bar.onmouseleave = () => d.classList.remove("hl");
 		b.onclick = e => { e.stopPropagation(); showSaved(n); };
-		p.wrap.appendChild(b);
+		bar.append(b, ...pinButtons(n, i + 1));
+		p.wrap.appendChild(bar);
 	});
+}
+// The buttons beside a margin number: add to the note by voice (no need to open it first), play its
+// recording, delete it (after asking).
+function pinButtons(n, k) {
+	const say = document.createElement("button"); say.textContent = "🎙"; say.title = `Add to note ${k}, spoken: records at once`;
+	say.onclick = async e => {
+		e.stopPropagation();
+		if (await finish() === false) return;
+		if (!S.micOn) { S.micOn = true; S.asleep = false; updateMicUi(); }  // a mic button records, even with the mic off
+		addTo(n);
+	};
+	const play = n.audio ? playBtn(n, true) : Object.assign(document.createElement("button"), { textContent: "▶", disabled: true, title: "Typed note: no recording" });
+	const del = document.createElement("button"); del.textContent = "🗑"; del.className = "danger"; del.title = `Delete note ${k}`;
+	del.onclick = e => {
+		e.stopPropagation();
+		confirmBox("Are you sure you want to delete this note?", `Note ${k}, its recording and anything added to it. This cannot be undone.`, "Delete", () => {
+			if (S.active && S.active.note.parent === n.id) discard();  // an addition being recorded goes with it
+			delIds([n.id]);
+		});
+	};
+	return [say, play, del];
 }
 
 async function onPageClick(e, p) {
@@ -837,6 +864,7 @@ function showSaved(n) {
 async function delIds(ids) {
 	const r = await api("/api/delete", { ids });
 	const gone = new Set(r.deleted || ids);
+	stopPlay(gone);
 	S.notes = S.notes.filter(x => !gone.has(x.id)); gone.forEach(i => S.sel.delete(i));
 	drawPins(); renderList(); toast(ids.length > 1 ? `Deleted ${ids.length} notes` : "Deleted");
 }
@@ -847,15 +875,30 @@ function confirmBox(title, text, label, fn) {
 		$("#modal .extra").classList.add("danger", "on");
 	});
 }
-function playBtn(m) {
-	const b = document.createElement("button"); b.textContent = "▶ Play";
-	b.onclick = e => {
-		e.stopPropagation();
-		if (b._a && !b._a.paused) { b._a.pause(); b.textContent = "▶ Play"; return; }
-		b._a = b._a || new Audio(U(`/audio/${m.audio}`));
-		b._a.onended = () => b.textContent = "▶ Play";
-		b._a.currentTime = 0; b._a.play(); b.textContent = "■ Stop";
-	};
+// One player for the page, keyed by note id: starting a clip pauses any other, and every play button
+// of that note (list and margin) shows Pause while it plays, also after the list is redrawn.
+const P = { id: null, audio: null };
+function syncPlay(btns = document.querySelectorAll("button[data-play]")) {
+	for (const b of btns) {
+		const on = P.id === b.dataset.play && !!P.audio && !P.audio.paused;
+		b.textContent = b._labels[+on]; b.title = on ? "Pause" : "Play the recording"; b.classList.toggle("on", on);
+	}
+}
+function togglePlay(m) {
+	if (P.id === m.id && P.audio) { if (P.audio.paused) P.audio.play(); else P.audio.pause(); return; }
+	if (P.audio) P.audio.pause();
+	const a = new Audio(U(`/audio/${m.audio}`));
+	Object.assign(P, { id: m.id, audio: a });
+	a.onplay = a.onpause = () => syncPlay();
+	a.onended = () => { if (P.audio === a) Object.assign(P, { id: null, audio: null }); syncPlay(); };
+	a.play().catch(() => {});
+}
+function stopPlay(ids) { if (P.audio && ids.has(P.id)) { P.audio.pause(); Object.assign(P, { id: null, audio: null }); } }
+// icons: the compact ▶ / ⏸ of the margin buttons.
+function playBtn(m, icons) {
+	const b = document.createElement("button"); b.dataset.play = m.id; b._labels = icons ? ["▶", "⏸"] : ["▶ Play", "⏸ Pause"];
+	b.onclick = e => { e.stopPropagation(); togglePlay(m); };
+	syncPlay([b]);
 	return b;
 }
 
@@ -937,9 +980,9 @@ function showHelp() {
 			<li><b>Save</b> a note: Enter, the Save button, clicking its pin again, or just clicking somewhere else (that saves it and starts the next one). A general remark also saves when you press General again.</li>
 			<li>Every saved note is on disk at once. Closing the tab or the reader loses nothing, and the next start resumes the round.</li>
 			<li><b>Discard</b> the note you are making: Esc or Discard. A click under a second with nothing typed is ignored.</li>
-			<li><b>Add</b> something you forgot: <b>+ 🎙</b> (spoken) or <b>+ ⌨</b> (typed or pasted) in the list, or open the note (its number in the margin). It is kept with the note.</li>
-			<li><b>Delete</b> a saved note: open it, then Delete. <b>Several</b>: tick them in the list, then Delete selected (Select all ticks every one).</li>
-			<li><b>Play back</b>: ▶ Play in the list, or open the note.</li>
+			<li><b>Add</b> something you forgot: <b>+ 🎙</b> (spoken) or <b>+ ⌨</b> (typed or pasted) in the list, 🎙 beside its number in the margin (records at once), or open the note. It is kept with the note.</li>
+			<li><b>Delete</b> a saved note: 🗑 beside its number in the margin, or open it, then Delete. <b>Several</b>: tick them in the list, then Delete selected (Select all ticks every one).</li>
+			<li><b>Play back</b>: ▶ beside its number in the margin or in the list (it turns into ⏸ Pause while playing), or open the note.</li>
 			<li><b>Finish round</b> copies a command (<code>/apply-feedback …</code> by default) for you to paste into Claude Code, at once. Clips are transcribed in the background as you go; Claude waits for any that are left.</li>
 			<li><b>Mic off</b>: the amber pill in the middle says so. <b>⌨ General</b> and <b>+ ⌨</b> never record, whatever the mic does (for pasting). In a recording note, <b>🔇 Text only</b> drops the recording. A note with nothing typed and nothing heard is not saved: it shakes and waits.</li>
 			<li><b>Find</b>: Cmd+F (the browser's own search) works on the PDF text. <b>Zoom</b>: pinch, Cmd + / Cmd −, or the buttons; the % button (or Cmd 0) fits the width.</li>

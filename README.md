@@ -30,6 +30,7 @@ a reply belongs to.
    fixes words it keeps mishearing.
 3. **Notes pinned to text.** Each note keeps its page, its position, the line of PDF text under the
    click and the word clicked.
+   Beside each note's number in the margin, small buttons add to it by voice, play it back or delete it.
 4. **Mapped to the source.** For a LaTeX document compiled with `-synctex=1`, every pin is mapped
    to its `.tex` file and line through SyncTeX, then corrected to the sentence actually clicked.
 5. **An agent applies your spoken feedback.** *Finish round* copies a command such as
