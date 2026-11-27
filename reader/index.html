@@ -923,12 +923,14 @@ async function finishRound() {
 	let copied = false;
 	try { await navigator.clipboard.writeText(r.command); copied = true; } catch (e) {}
 	modal((body, button) => {
-		body.innerHTML = `<h2>Round saved</h2><p>${r.kept} notes. ${copied ? "The command is on your clipboard" : "Copy this command"}: paste it into Claude Code (${r.where || "in any Claude Code session"}) and press Enter.</p>`;
+		body.innerHTML = `<h2>Round saved</h2><p>${r.kept} notes. ${copied ? "The command is on your clipboard" : "Copy this command"}: paste it into Claude Code (${r.where || "in any Claude Code session"}) and press Enter. <b>Copy and open Claude</b> does both steps but the paste.</p>`;
 		const c = document.createElement("code"); c.textContent = r.command; body.appendChild(c);
 		const q = document.createElement("p"); q.className = "muted";
 		q.textContent = (r.left ? `${r.left} clip${r.left === 1 ? " is" : "s are"} still being transcribed in the background. Paste now anyway: Claude waits for it. ` : "Everything is transcribed. ")
 			+ "You can carry on here or open the next PDF. The mic is off: press the mic button when you want it again.";
 		body.appendChild(q);
+		// One click copies the command and brings the Claude desktop app forward (its claude:// link), ready to paste.
+		button("Copy and open Claude", () => navigator.clipboard.writeText(r.command).then(() => { closeModal(); location.href = "claude://"; }));
 		button("Copy again", () => navigator.clipboard.writeText(r.command).then(() => toast("Copied")));
 	});
 	S.notes = []; S.sel.clear(); drawPins(); renderList();
