@@ -815,8 +815,9 @@ function showSaved(n) {
 	modal((body, button) => {
 		const head = (n.kind === "general" ? "General remark" : (n.source ? `${n.source.file}:${n.source.line}` : `Page ${n.page}`)) + ` · note ${num(n)}`;
 		const p = document.createElement("div"); p.className = "pre"; p.textContent = head + (n.line_text ? `\n“${n.line_text}”` : ""); body.appendChild(p);
-		const part = (m, box, first) => {
-			if (m.audio) { const a = document.createElement("audio"); a.controls = true; a.autoplay = first; a.src = U(`/audio/${m.audio}`); box.appendChild(a); }
+		const part = (m, box) => {
+			// No autoplay: opening a note (e.g. to add to it) stays silent until its play control is pressed.
+			if (m.audio) { const a = document.createElement("audio"); a.controls = true; a.src = U(`/audio/${m.audio}`); box.appendChild(a); }
 			// Typed text opens ready to edit: Enter or closing saves, Esc puts it back, Shift+Enter new line.
 			if (m.typed) {
 				const ta = document.createElement("textarea"); ta.className = "edittyped"; ta.value = m.typed; ta.title = "Edit, then Enter (or close) to save. Esc undoes. Shift+Enter new line.";
@@ -832,12 +833,12 @@ function showSaved(n) {
 			if (t.textContent) box.appendChild(t);
 		};
 		const edits = []; S.onModalClose = () => saveEdits(edits);
-		part(n, body, true);
+		part(n, body);
 		for (const m of adds(n)) {
 			const box = document.createElement("div"); box.className = "add"; body.appendChild(box);
 			const h = document.createElement("div"); h.className = "muted"; h.textContent = "Added "; box.appendChild(h);
 			const x = document.createElement("button"); x.textContent = "Delete this addition"; x.onclick = async () => { await delIds([m.id]); showSaved(n); }; h.appendChild(x);
-			part(m, box, false);
+			part(m, box);
 		}
 		button("+ 🎙 Say more", () => addTo(n));
 		button("+ ⌨ Type more", () => addTo(n, true));
